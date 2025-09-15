@@ -62,9 +62,6 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		if (m_sFreqConfig != "")
 			m_FreqConfig = CVON_FreqConfig.Cast(BaseContainerTools.CreateInstanceFromContainer(BaseContainerTools.LoadContainer(m_sFreqConfig).GetResource().ToBaseContainer()));
 		
-		if (!System.IsConsoleApp())
-			return;
-		
 		SCR_BaseGameMode gameMode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
 		gameMode.GetOnPlayerConnected().Insert(OnPlayerConnectedHandler);
 		gameMode.GetOnPlayerDisconnected().Insert(OnPlayerDisconnectedHandler);
