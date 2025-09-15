@@ -61,20 +61,25 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		super.OnPostInit(owner);
 		if (m_sFreqConfig != "")
 			m_FreqConfig = CVON_FreqConfig.Cast(BaseContainerTools.CreateInstanceFromContainer(BaseContainerTools.LoadContainer(m_sFreqConfig).GetResource().ToBaseContainer()));
+		
+		if (!System.IsConsoleApp())
+			return;
+		
+		SCR_BaseGameMode gameMode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
+		gameMode.GetOnPlayerConnected().Insert(OnPlayerConnectedHandler);
+		gameMode.GetOnPlayerDisconnected().Insert(OnPlayerDisconnectedHandler);
 	}
 	
-	override void OnPlayerConnected(int playerId)
+	void OnPlayerConnectedHandler(int playerId)
 	{
-		super.OnPlayerConnected(playerId);
 		m_aPlayerVolumes.Insert(SCR_PlayerController.m_aVolumeValues[2]);
 		m_aPlayerClientIds.Insert(0);
 		m_aPlayerIds.Insert(playerId);
 		Replication.BumpMe();
 	}
 	
-	override void OnPlayerDisconnected(int playerId, KickCauseCode cause, int timeout)
+	void OnPlayerDisconnectedHandler(int playerId, KickCauseCode cause, int timeout)
 	{
-		super.OnPlayerDisconnected(playerId, cause, timeout);
 		if (!m_aPlayerIds.Contains(playerId))
 			return;
 		
