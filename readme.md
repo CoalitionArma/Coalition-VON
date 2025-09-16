@@ -1,4 +1,4 @@
-# Coalition TeamSpeak Plugin – Server Admin Quickstart guid
+# Coalition TeamSpeak Plugin – Server Admin Quickstart Guide
 
 Arma Reforger writes a `VONServerSettings.json` file that tells the Coalition TeamSpeak Plugin how to connect and synchronize with your TeamSpeak server. This file is the single source of truth for connection details and channel management.
 
