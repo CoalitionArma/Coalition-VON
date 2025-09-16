@@ -20,10 +20,12 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	//These are stored from server settings on the server so clients can know what ChannelName and whats the password to join that VOIP channel.
 	[RplProp()] string m_sTeamSpeakChannelName = "";
 	[RplProp()] string m_sTeamSpeakChannelPassword = "";
+	[RplProp()] string m_sTeamSpeakServerIP = "";
+	[RplProp()] string m_sTeamSpeakServerPassword = "";
 	[RplProp()] ref array<int> m_aPlayerVolumes = {};
 	[RplProp()] ref array<int> m_aPlayerClientIds = {};
 	[RplProp()] ref array<int> m_aPlayerIds = {};
-	string m_sTeamspeakPluginVersion = "1.9.6";
+	string m_sTeamspeakPluginVersion = "1.9.7";
 	
 	//If disabled everyone shares the same frequencies.
 	[Attribute("1")] bool m_bUseFactionEcncryption;
@@ -103,15 +105,30 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			ServerJSON.StartObject("Server Settings");
 			ServerJSON.WriteValue("VONChannelName", "");
 			ServerJSON.WriteValue("VONChannelPassword", "");
+			ServerJSON.WriteValue("TeamspeakServerIP", "");
+			ServerJSON.WriteValue("TeamspeakServerPassword", "");
 			ServerJSON.EndObject();
 			ServerJSON.SaveToFile("$profile:/VONServerSettings.json");
 		}
 		else
 		{
 			JSONLoad.StartObject("Server Settings");
-			JSONLoad.ReadValue("VONChannelName", m_sTeamSpeakChannelName);
-			JSONLoad.ReadValue("VONChannelPassword", m_sTeamSpeakChannelPassword);
+			bool name = JSONLoad.ReadValue("VONChannelName", m_sTeamSpeakChannelName);
+			bool pass = JSONLoad.ReadValue("VONChannelPassword", m_sTeamSpeakChannelPassword);
+			bool ip = JSONLoad.ReadValue("TeamspeakServerIP", m_sTeamSpeakServerIP);
+			bool serverPass = JSONLoad.ReadValue("TeamspeakServerPassword", m_sTeamSpeakServerPassword);
 			JSONLoad.EndObject();
+			if (!name || !pass || !ip || !serverPass)
+			{
+				SCR_JsonSaveContext ServerJSON = new SCR_JsonSaveContext();
+				ServerJSON.StartObject("Server Settings");
+				ServerJSON.WriteValue("VONChannelName", m_sTeamSpeakChannelName);
+				ServerJSON.WriteValue("VONChannelPassword", m_sTeamSpeakChannelPassword);
+				ServerJSON.WriteValue("TeamspeakServerIP", m_sTeamSpeakServerIP);
+				ServerJSON.WriteValue("TeamspeakServerPassword", m_sTeamSpeakServerPassword);
+				ServerJSON.EndObject();
+				ServerJSON.SaveToFile("$profile:/VONServerSettings.json");
+			}
 			Replication.BumpMe();
 		}
 	}

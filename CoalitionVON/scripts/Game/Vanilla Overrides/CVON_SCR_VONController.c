@@ -966,10 +966,13 @@ modded class SCR_VONController
 			VONServerData.StartObject("ServerData");
 			VONServerData.SetMaxDecimalPlaces(1);
 			VONServerData.WriteValue("InGame", true);
+			VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(SCR_PlayerController.GetLocalPlayerId()));
 			VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
 			VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
 			VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
 			VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
+			VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
+			VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
 			VONServerData.EndObject();
 			VONServerData.SaveToFile("$profile:/VONServerData.json");
 		}
@@ -998,10 +1001,13 @@ modded class SCR_VONController
 				VONServerData.StartObject("ServerData");
 				VONServerData.SetMaxDecimalPlaces(1);
 				VONServerData.WriteValue("InGame", true);
+				VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(SCR_PlayerController.GetLocalPlayerId()));
 				VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
 				VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
 				VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
 				VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
+				VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
+				VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
 				VONServerData.EndObject();
 				VONServerData.SaveToFile("$profile:/VONServerData.json");
 			}
@@ -1103,10 +1109,13 @@ modded class SCR_VONController
 		SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
 		VONServerData.StartObject("ServerData");
 		VONServerData.WriteValue("InGame", false);
+		VONServerData.WriteValue("InGameName", "");
 		VONServerData.WriteValue("TSClientID", 0);
 		VONServerData.WriteValue("TSPluginVersion", 0);
 		VONServerData.WriteValue("VONChannelName", "");
 		VONServerData.WriteValue("VONChannelPassword", "");
+		VONServerData.WriteValue("TSServerIp", "");
+		VONServerData.WriteValue("TSServerPassword", "");
 		VONServerData.EndObject();
 		VONServerData.SaveToFile("$profile:/VONServerData.json");
 	}

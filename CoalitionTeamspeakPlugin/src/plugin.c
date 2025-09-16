@@ -138,10 +138,25 @@ static uint64              g_prevChannelId     = 0; /* user’s last non-game ch
 static uint64              g_gameChannelId     = 0; /* cached ID of the VONChannelName */
 static DWORD               g_nextReturnTryTick = 0;
 static DWORD               g_returnBackoffMs   = MOVE_BACKOFF_MIN_MS;
+static char                g_SD_serverIp[512]       = {0};
+static char                g_SD_serverPassword[512] = {0};
+static char                g_SD_ingameName[512]     = {0};
+static uint64              g_autoConnSch            = 0; // handler ID we auto-connected to
+static char                g_lastAutoConnectIp[256] = {0};
+static uint64              g_lastAutoConnectSch     = 0;
+
 /* ---------------------------------------------------------------------------
    Helpers
 --------------------------------------------------------------------------- */
 /* Find channel by exact (or case-insensitive) name */
+static int confirm_autoconnect(const char* ip, const char* nickname)
+{
+    char msg[512];
+    _snprintf(msg, sizeof(msg), "Do you want to connect TeamSpeak to:\n\nServer: %s\nNickname: %s\n\nPress Yes to connect, No to cancel.", ip, nickname);
+    int res = MessageBoxA(NULL, msg, "Arma Reforger Auto-Connect", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
+    return (res == IDYES);
+}
+
 static uint64 find_channel_by_name(uint64 sch, const char* name)
 {
     if (!name || !name[0])
@@ -1024,6 +1039,24 @@ static void read_serverdata_from_disk(void)
             strncpy(g_SD_chanPass, chanPass, sizeof(g_SD_chanPass) - 1);
             g_SD_chanPass[sizeof(g_SD_chanPass) - 1] = '\0';
         }
+        cJSON* ipJSON = cJSON_GetObjectItem(serverDataJSON, "TSServerIp");
+        if (cJSON_IsString(ipJSON)) {
+            strncpy(g_SD_serverIp, ipJSON->valuestring, sizeof(g_SD_serverIp) - 1);
+            trim_inplace(g_SD_serverIp);
+        }
+
+        cJSON* pwJSON = cJSON_GetObjectItem(serverDataJSON, "TSServerPassword");
+        if (cJSON_IsString(pwJSON)) {
+            strncpy(g_SD_serverPassword, pwJSON->valuestring, sizeof(g_SD_serverPassword) - 1);
+            trim_inplace(g_SD_serverPassword);
+        }
+
+        cJSON* nickJSON = cJSON_GetObjectItem(serverDataJSON, "InGameName");
+        if (cJSON_IsString(nickJSON)) {
+            strncpy(g_SD_ingameName, nickJSON->valuestring, sizeof(g_SD_ingameName) - 1);
+            trim_inplace(g_SD_ingameName);
+        }
+
     }
 
     cJSON_Delete(serverDataRootJSON);
@@ -1040,7 +1073,6 @@ static void write_serverdata_if_changed(uint64 sch)
 
     const char* pvStr = ts3plugin_version();
 
-    /* Only write if something differs from our last write snapshot */
     int needWrite = 0;
     if (!g_lastServerWritten.valid)
         needWrite = 1;
@@ -1060,33 +1092,37 @@ static void write_serverdata_if_changed(uint64 sch)
 
     ensureParentDirExists(g_ServerPath);
 
+    // Build new JSON object but preserve what Arma set
     cJSON* serverDataJSON = cJSON_CreateObject();
+
+    // Fields the game cares about
+    if (g_SD_serverIp[0])
+        cJSON_AddStringToObject(serverDataJSON, "TSServerIp", g_SD_serverIp);
+    if (g_SD_serverPassword[0])
+        cJSON_AddStringToObject(serverDataJSON, "TSServerPassword", g_SD_serverPassword);
+    if (g_SD_ingameName[0])
+        cJSON_AddStringToObject(serverDataJSON, "InGameName", g_SD_ingameName);
+
+    // Fields the plugin manages
     cJSON_AddBoolToObject(serverDataJSON, "InGame", g_SD_inGame);
     cJSON_AddNumberToObject(serverDataJSON, "TSClientID", myID);
     cJSON_AddStringToObject(serverDataJSON, "TSPluginVersion", pvStr);
     cJSON_AddStringToObject(serverDataJSON, "VONChannelName", g_SD_chanName);
     cJSON_AddStringToObject(serverDataJSON, "VONChannelPassword", g_SD_chanPass);
 
-    cJSON* serverDataRootJSON = cJSON_CreateObject();
-    cJSON_AddItemToObject(serverDataRootJSON, "ServerData", serverDataJSON);
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "ServerData", serverDataJSON);
 
-    char* serverDataRootStr = cJSON_Print(serverDataRootJSON);
-    if (!serverDataRootStr) {
-        logf("[CRF] Failed to create JSON for VONServerData.json\n");
-        cJSON_Delete(serverDataRootJSON);
-        return;
+    char* out = cJSON_Print(root);
+    if (out) {
+        FILE* wf = fopen(g_ServerPath, "wb");
+        if (wf) {
+            fprintf(wf, "%s", out);
+            fclose(wf);
+        }
+        free(out);
     }
-
-    FILE* wf = fopen(g_ServerPath, "wb");
-    if (!wf) {
-        logf("[CRF] Failed to open VONServerData.json for write\n");
-        cJSON_Delete(serverDataRootJSON);
-        return;
-    }
-
-    fprintf(wf, serverDataRootStr);
-    fclose(wf);
-    cJSON_Delete(serverDataRootJSON);
+    cJSON_Delete(root);
 
     g_lastServerWritten.tsClientID = (unsigned)myID;
     g_lastServerWritten.inGame     = g_SD_inGame;
@@ -1095,10 +1131,9 @@ static void write_serverdata_if_changed(uint64 sch)
     strncpy(g_lastServerWritten.chanPass, g_SD_chanPass, sizeof(g_lastServerWritten.chanPass) - 1);
     g_lastServerWritten.valid = 1;
 
-
     g_serverWatchSuppressUntil = GetTickCount() + SERVER_WRITE_SUPPRESS_MS;
-    logf("[CRF] Wrote VONServerData.json (suppressed watch for %u ms)\n", (unsigned)SERVER_WRITE_SUPPRESS_MS);
 }
+
 
 /* Channel move with backoff handled by worker */
 static DWORD g_nextMoveTryTick = 0;
@@ -1404,6 +1439,48 @@ static DWORD WINAPI worker_main(LPVOID param)
             write_serverdata_if_changed(sch);
         }
 
+        /* ---------------- Auto-connect if IP changed ---------------- */
+        if (g_SD_have && g_SD_inGame && g_SD_serverIp[0]) {
+            if (strcmp(g_lastAutoConnectIp, g_SD_serverIp) != 0) {
+                // Ask user first
+                const char* nickname = g_SD_ingameName[0] ? g_SD_ingameName : "ReforgerUser";
+                if (!confirm_autoconnect(g_SD_serverIp, nickname)) {
+                    logf("[CRF] User declined auto-connect to %s\n", g_SD_serverIp);
+                    strncpy(g_lastAutoConnectIp, g_SD_serverIp, sizeof(g_lastAutoConnectIp) - 1);
+                    g_lastAutoConnectIp[sizeof(g_lastAutoConnectIp) - 1] = '\0';
+                    continue; // skip this attempt, don’t retry until IP changes again
+                }
+
+                // If we had a previous auto-connect, disconnect it first
+                if (g_lastAutoConnectSch) {
+                    unsigned int derr = ts3Functions.stopConnection(g_lastAutoConnectSch, "Switching game server");
+                    if (derr == ERROR_ok) {
+                        logf("[CRF] Closed previous connection (%s)\n", g_lastAutoConnectIp);
+                    } else {
+                        logf("[CRF] Failed to close previous connection, err=%u\n", derr);
+                    }
+                    g_lastAutoConnectSch   = 0;
+                    g_lastAutoConnectIp[0] = '\0';
+                }
+
+                // Try connecting to the new IP using the *current* tab
+                uint64       newSch = 0;
+                unsigned int err    = ts3Functions.guiConnect(PLUGIN_CONNECT_TAB_CURRENT, "Arma Reforger AutoConnect", g_SD_serverIp, g_SD_serverPassword, nickname, "", "", NULL, NULL, NULL, NULL, NULL, NULL, NULL, &newSch);
+
+                if (err == ERROR_ok) {
+                    logf("[CRF] Auto-connected to %s as %s\n", g_SD_serverIp, nickname);
+                    strncpy(g_lastAutoConnectIp, g_SD_serverIp, sizeof(g_lastAutoConnectIp) - 1);
+                    g_lastAutoConnectIp[sizeof(g_lastAutoConnectIp) - 1] = '\0';
+                    g_lastAutoConnectSch                                 = newSch;
+                } else {
+                    logf("[CRF] Auto-connect failed (%u)\n", err);
+                    // don’t update globals so we retry on next loop
+                }
+            }
+        }
+
+
+
         /* ---------------- Channel moves ---------------- */
         try_ensure_move(sch);
         try_return_to_previous(sch);
@@ -1482,7 +1559,7 @@ PL_EXPORT const char* ts3plugin_name()
 }
 PL_EXPORT const char* ts3plugin_version()
 {
-    return "1.9.6";
+    return "1.9.7";
 }
 PL_EXPORT int ts3plugin_apiVersion()
 {
