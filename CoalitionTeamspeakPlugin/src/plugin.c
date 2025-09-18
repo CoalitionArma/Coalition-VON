@@ -18,7 +18,8 @@
  *     ConnectionQuality (0..1) injects more noise and softens voice as quality drops.
  *
  *     Behavior:
- *       - If there is a RADIO match → radio-only (consistent with previous).
+ *       - If there is a RADIO match AND has proximity gains → radio + direct (mixed)
+ *       - If there is a RADIO match BUT no proximity gains → radio-only 
  *       - If there is NO radio match → DIRECT fallback using Left/Right only
  *         (with yell boost + NEW muffle filter based on MuffledDecibels).
  *
@@ -432,6 +433,9 @@ static size_t           g_LastCount = 0;
 /* Threshold for considering a user "out of range" (very low gain) */
 #define OUT_OF_RANGE_THRESHOLD 0.001f
 
+/* Threshold for local voice to be audible when speaking on radio */
+#define LOCAL_AUDIBLE_THRESHOLD 0.01f
+
 /* ---------------------------------------------------------------------------
    Proximity-based muting functions
    
@@ -440,6 +444,16 @@ static size_t           g_LastCount = 0;
    proximity/volume) fall below the threshold, they are muted via the TeamSpeak
    API. When they come back into range, they are automatically unmuted.
 --------------------------------------------------------------------------- */
+
+/* Check if a user has audible local proximity gains */
+static int has_local_proximity(const VonEntry* entry)
+{
+    if (!entry)
+        return 0;
+    
+    float maxGain = (entry->leftGain > entry->rightGain) ? entry->leftGain : entry->rightGain;
+    return (maxGain > LOCAL_AUDIBLE_THRESHOLD) ? 1 : 0;
+}
 
 /* ---------------------------------------------------------------------------
    Filters / DSP for RADIO
@@ -1559,7 +1573,7 @@ PL_EXPORT const char* ts3plugin_name()
 }
 PL_EXPORT const char* ts3plugin_version()
 {
-    return "1.9.7";
+    return "1.9.8";
 }
 PL_EXPORT int ts3plugin_apiVersion()
 {
@@ -1765,6 +1779,9 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
         if (matched) {
             const float q  = clampf(e->connQ, 0.0f, 1.0f);
             RadioState* st = get_radio_state(clientID);
+            
+            /* Check if user also has local proximity for simultaneous local + radio */
+            int hasLocalProximity = has_local_proximity(e);
 
             int processed = 0;
             while (processed < sampleCount) {
@@ -1775,9 +1792,11 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
                 float mono[RADIO_PROCESS_CHUNK];
                 float voice[RADIO_PROCESS_CHUNK];
                 float hiss[RADIO_PROCESS_CHUNK];
+                float directVoice[RADIO_PROCESS_CHUNK];  /* NEW: for local voice */
                 float outL[RADIO_PROCESS_CHUNK];
                 float outR[RADIO_PROCESS_CHUNK];
 
+                /* Convert input to mono for radio processing */
                 if (channels <= 1) {
                     for (int i = 0; i < n; ++i)
                         mono[i] = (float)samples[processed + i] / 32768.0f;
@@ -1790,42 +1809,102 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
                     }
                 }
 
+                /* Copy mono signal for radio processing */
                 for (int i = 0; i < n; ++i) {
                     voice[i] = mono[i];
+                    directVoice[i] = mono[i];  /* Copy for local processing */
                     outL[i] = outR[i] = 0.0f;
                 }
 
+                /* Process radio voice with effects */
                 radio_color_voice_only(st, voice, n, vol01, q);
 
-                const float voiceGain = clampf(vol01, 0.0f, 1.0f); // quality affects FX/noise, not loudness
+                const float voiceGain = clampf(vol01, 0.0f, 1.0f);
                 for (int i = 0; i < n; ++i)
                     voice[i] *= voiceGain;
 
+                /* Generate radio static */
                 radio_make_static(st, hiss, n, q, q);
 
+                /* Process direct voice if user has local proximity */
+                if (hasLocalProximity) {
+                    const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
+                    const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
+                    float       avg       = 0.5f * (lG + rG);
+                    float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
+
+                    const float lMul = clampf(lG * yellBoost * DIRECT_GAIN_MUL * 0.6f, 0.0f, 2.0f);  /* Reduced for mixing */
+                    const float rMul = clampf(rG * yellBoost * DIRECT_GAIN_MUL * 0.6f, 0.0f, 2.0f);  /* Reduced for mixing */
+
+                    /* Apply muffle filter if needed */
+                    const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
+                    const int   doMuf = (occDb > 0.1f) ? 1 : 0;
+
+                    DirectState* ds = NULL;
+                    float        fc = 8000.0f;
+                    if (doMuf) {
+                        ds = get_direct_state(clientID);
+                        fc = occlusion_db_to_fc(occDb);
+                        if (fabsf(fc - ds->lastFc) > 10.0f) {
+                            for (int i = 0; i < MUFFLE_STAGES; ++i) {
+                                biquad_update_lowpass(&ds->lpL[i], TS_SAMPLE_RATE, fc, 0.9f);
+                                biquad_update_lowpass(&ds->lpR[i], TS_SAMPLE_RATE, fc, 0.9f);
+                                biquad_update_lowpass(&ds->lpM[i], TS_SAMPLE_RATE, fc, 0.9f);
+                            }
+                            ds->lastFc = fc;
+                        }
+                    }
+
+                    /* Apply direct processing to directVoice */
+                    for (int i = 0; i < n; ++i) {
+                        directVoice[i] *= (lMul + rMul) * 0.5f;  /* Average for mono */
+                        if (doMuf) {
+                            for (int s = 0; s < MUFFLE_STAGES; ++s)
+                                directVoice[i] = biquad_tick(&ds->lpM[s], directVoice[i]);
+                        }
+                    }
+                }
+
+                /* Mix radio and direct audio */
                 if (channels <= 1) {
                     for (int i = 0; i < n; ++i) {
-                        float s = clampf(voice[i] + hiss[i], -1.0f, 1.0f);
-                        s *= RADIO_GAIN_MUL;
-
-                        outL[i] = s;
-                        outR[i] = s;
+                        float radioS = clampf(voice[i] + hiss[i], -1.0f, 1.0f) * RADIO_GAIN_MUL;
+                        float directS = hasLocalProximity ? directVoice[i] : 0.0f;
+                        float mixed = radioS + directS;
+                        
+                        outL[i] = mixed;
+                        outR[i] = mixed;
                     }
                 } else {
                     for (int i = 0; i < n; ++i) {
-                        float s = clampf(voice[i] + hiss[i], -1.0f, 1.0f);
-                        s *= RADIO_GAIN_MUL;
+                        float radioS = clampf(voice[i] + hiss[i], -1.0f, 1.0f) * RADIO_GAIN_MUL;
+                        float directS = hasLocalProximity ? directVoice[i] : 0.0f;
 
-                        float Ls = s, Rs = s;
+                        /* Apply radio stereo settings */
+                        float radioLs = radioS, radioRs = radioS;
                         if (stereo == 1) {
-                            Ls = 0.0f;
-                            Rs = s;
+                            radioLs = 0.0f;
+                            radioRs = radioS;
                         } else if (stereo == 2) {
-                            Ls = s;
-                            Rs = 0.0f;
+                            radioLs = radioS;
+                            radioRs = 0.0f;
                         }
-                        outL[i] = Ls;
-                        outR[i] = Rs;
+
+                        /* Apply direct spatialization if present */
+                        float directLs = directS, directRs = directS;
+                        if (hasLocalProximity) {
+                            const float lG = clampf(e->leftGain, 0.0f, 2.0f);
+                            const float rG = clampf(e->rightGain, 0.0f, 2.0f);
+                            float avgGain = 0.5f * (lG + rG);
+                            if (avgGain > 0.001f) {
+                                directLs = directS * (lG / avgGain);
+                                directRs = directS * (rG / avgGain);
+                            }
+                        }
+
+                        /* Mix radio and direct */
+                        outL[i] = radioLs + directLs;
+                        outR[i] = radioRs + directRs;
                     }
                 }
 
