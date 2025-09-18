@@ -104,6 +104,11 @@ modded class SCR_PlayerController
 	//Loading settings only works if the radios where pe configured with the CVON_FreqConfig.
 	void InitializeRadios(IEntity to)
 	{
+		if (GetGame().GetPlayerController())
+		{
+			SCR_VONController vonController = SCR_VONController.Cast(GetGame().GetPlayerController().FindComponent(SCR_VONController));
+			vonController.m_CharacterController = SCR_CharacterControllerComponent.Cast(to.FindComponent(SCR_CharacterControllerComponent));
+		}
 		m_aRadios.Clear();
 		//Reforger Lobby bs
 		m_aLocalActiveVONEntries.Clear();
@@ -150,12 +155,7 @@ modded class SCR_PlayerController
 		IEntity radioEntity = RplComponent.Cast(Replication.FindItem(radios.Get(0))).GetEntity();
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
 		if (GetGame().GetPlayerController())
-		{
-			SCR_VONController vonController = SCR_VONController.Cast(GetGame().GetPlayerController().FindComponent(SCR_VONController));
-			vonController.m_CharacterController = SCR_CharacterControllerComponent.Cast(to.FindComponent(SCR_CharacterControllerComponent));
 			radioComp.WriteJSON(to);
-		}
-			
 	}
 	
 	//mmmmgetter

@@ -1110,12 +1110,9 @@ static void write_serverdata_if_changed(uint64 sch)
     cJSON* serverDataJSON = cJSON_CreateObject();
 
     // Fields the game cares about
-    if (g_SD_serverIp[0])
-        cJSON_AddStringToObject(serverDataJSON, "TSServerIp", g_SD_serverIp);
-    if (g_SD_serverPassword[0])
-        cJSON_AddStringToObject(serverDataJSON, "TSServerPassword", g_SD_serverPassword);
-    if (g_SD_ingameName[0])
-        cJSON_AddStringToObject(serverDataJSON, "InGameName", g_SD_ingameName);
+    cJSON_AddStringToObject(serverDataJSON, "TSServerIp", g_SD_serverIp);
+    cJSON_AddStringToObject(serverDataJSON, "TSServerPassword", g_SD_serverPassword);
+    cJSON_AddStringToObject(serverDataJSON, "InGameName", g_SD_ingameName);
 
     // Fields the plugin manages
     cJSON_AddBoolToObject(serverDataJSON, "InGame", g_SD_inGame);
