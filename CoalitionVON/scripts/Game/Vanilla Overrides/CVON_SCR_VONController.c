@@ -524,7 +524,21 @@ modded class SCR_VONController
 			
 			IEntity player = m_PlayerManager.GetPlayerControlledEntity(playerId);
 			if (!player)
-				continue;
+			{
+				if (m_PlayerController.m_aLocalActiveVONEntriesIds.Contains(playerId))
+				{
+					//If this VON Transmission is radio, don't do shit
+					if (m_PlayerController.m_aLocalActiveVONEntries.Get(m_PlayerController.m_aLocalActiveVONEntriesIds.Find(playerId)).m_eVonType == CVON_EVONType.RADIO)
+						continue;
+					int index = m_PlayerController.m_aLocalActiveVONEntriesIds.Find(playerId);
+					m_PlayerController.m_aLocalActiveVONEntriesIds.RemoveOrdered(index);
+					m_PlayerController.m_aLocalActiveVONEntries.RemoveOrdered(index);
+					continue;
+				}
+				else
+					continue;
+			}
+			
 			SCR_CharacterControllerComponent charCont = SCR_CharacterControllerComponent.Cast(ChimeraCharacter.Cast(player).GetCharacterController());
 			if (charCont.IsDead() || charCont.IsUnconscious())
 				if (m_PlayerController.m_aLocalActiveVONEntriesIds.Contains(playerId))
