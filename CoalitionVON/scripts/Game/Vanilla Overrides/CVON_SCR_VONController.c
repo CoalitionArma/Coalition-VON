@@ -982,12 +982,14 @@ modded class SCR_VONController
 			string ChannelPassword;
 			int TSClientId = 0;
 			bool InGame;
+			string gameName;
 			VONLoad.StartObject("ServerData");
 			VONLoad.ReadValue("InGame", InGame);
 			VONLoad.ReadValue("VONChannelName", ChannelName);
 			VONLoad.ReadValue("VONChannelPassword", ChannelPassword);
 			VONLoad.ReadValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
 			VONLoad.ReadValue("TSClientID", TSClientId);
+			VONLoad.ReadValue("InGameName", gameName);
 			if (m_PlayerController.GetTeamspeakClientId() != TSClientId && m_fWriteTeamspeakClientIdCooldown <= 0)
 			{
 				m_fWriteTeamspeakClientIdCooldown = 1;
@@ -995,7 +997,7 @@ modded class SCR_VONController
 			}
 				
 			VONLoad.EndObject();
-			if (ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
+			if (gameName == "" || ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
 			{
 				SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
 				VONServerData.StartObject("ServerData");
