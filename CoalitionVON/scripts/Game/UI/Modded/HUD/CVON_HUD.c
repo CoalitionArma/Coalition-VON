@@ -253,7 +253,6 @@ class CVON_HUD: SCR_InfoDisplay {
 		//Radio Name text
 		radio.SetText(radioComp.m_sRadioName);
 		//Freq text
-		Print(radioComp.m_aChannels);
 		frequency.SetText(radioComp.m_aChannels.Get(input));
 		//Channel text
 		channel.SetText(string.Format("CH-%1", input + 1));

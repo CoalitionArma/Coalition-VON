@@ -368,7 +368,8 @@ typedef struct {
     int      txTimeDev;
     float    connQ;
     char     txFaction[64];
-    float    muffledDb; /* NEW: negative (e.g., 0, -12, -18) */
+    float    muffledDb;      /* negative (e.g., 0, -12, -18) */
+    DWORD    lastUpdateTick; /* NEW: track last time we got valid JSON */
 } VonEntry;
 
 static struct {
@@ -700,11 +701,16 @@ static void radio_color_voice_only(RadioState* st, float* buf, int n, float volu
 typedef struct {
     anyID  id;
     int    have;
-    Biquad lpL[MUFFLE_STAGES]; /* stereo LP (left)  */
-    Biquad lpR[MUFFLE_STAGES]; /* stereo LP (right) */
-    Biquad lpM[MUFFLE_STAGES]; /* mono LP for 1ch   */
+    Biquad lpL[MUFFLE_STAGES];
+    Biquad lpR[MUFFLE_STAGES];
+    Biquad lpM[MUFFLE_STAGES];
     float  lastFc;
+
+    // NEW for smoothing
+    float smoothedL;
+    float smoothedR;
 } DirectState;
+
 
 static CRITICAL_SECTION g_directLock;
 static DirectState      g_directStates[4096];
@@ -734,6 +740,8 @@ static DirectState* get_direct_state(anyID id)
         memset(s, 0, sizeof(*s));
         s->id   = id;
         s->have = 1;
+        s->smoothedL = 0.0f;
+        s->smoothedR = 0.0f;
         for (int i = 0; i < MUFFLE_STAGES; ++i) {
             biquad_calc_lowpass(&s->lpL[i], TS_SAMPLE_RATE, 8000.0f, 0.9f);
             biquad_calc_lowpass(&s->lpR[i], TS_SAMPLE_RATE, 8000.0f, 0.9f);
@@ -747,13 +755,20 @@ static DirectState* get_direct_state(anyID id)
     return &g_directStates[0];
 }
 
+static inline float smooth_gain(float current, float target)
+{
+    const float alpha = 0.05f; // 0.0 = frozen, 1.0 = instant
+    return current + alpha * (target - current);
+}
+
+
 /* ---------------------------------------------------------------------------
    JSON loaders (using reusable buffers)
 --------------------------------------------------------------------------- */
 static void load_json_snapshot(void)
 {
-    g_Von.count      = 0;
-    g_Von.loaded     = 0;
+    g_Von.count  = 0;
+    g_Von.loaded = 0;
     if (!g_Von.jsonPath[0])
         return;
 
@@ -762,9 +777,9 @@ static void load_json_snapshot(void)
         return;
 
     cJSON* vonDataJSON = cJSON_Parse(g_vonBuf);
-    if (vonDataJSON == NULL) {
+    if (!vonDataJSON) {
         const char* error = cJSON_GetErrorPtr();
-        if (error != NULL) {
+        if (error) {
             logf("Error reading VONData: %s\n", error);
         }
         return;
@@ -776,7 +791,8 @@ static void load_json_snapshot(void)
     }
 
     cJSON* vonJSON;
-    cJSON_ArrayForEach(vonJSON, vonDataJSON){
+    cJSON_ArrayForEach(vonJSON, vonDataJSON)
+    {
         if (g_Von.count >= MAX_TRACKED)
             break;
 
@@ -787,62 +803,95 @@ static void load_json_snapshot(void)
         memset(&e, 0, sizeof(e));
         e.id           = (anyID)atoi(vonJSON->string);
         e.type         = VON_DIRECT;
-        e.leftGain     = 1.0f;
-        e.rightGain    = 1.0f;
+        e.leftGain     = 0.0f;
+        e.rightGain    = 0.0f;
         e.txFreq[0]    = '\0';
         e.txTimeDev    = INT_MIN;
         e.connQ        = 1.0f;
         e.txFaction[0] = '\0';
-        e.muffledDb    = 0.0f; /* default none */
+        e.muffledDb    = 0.0f;
 
+        // Find last known entry for this ID
+        const VonEntry* old = NULL;
+        for (size_t j = 0; j < g_Von.count; ++j) {
+            if (g_Von.entries[j].id == e.id) {
+                old = &g_Von.entries[j];
+                break;
+            }
+        }
+
+        // Type
         cJSON* vonTypeJSON = cJSON_GetObjectItem(vonJSON, "VONType");
         if (cJSON_IsNumber(vonTypeJSON)) {
             e.type = (vonTypeJSON->valueint == 1) ? VON_RADIO : VON_DIRECT;
+        } else if (old) {
+            e.type = old->type;
         }
 
+        // Gains
         cJSON* leftGainJSON = cJSON_GetObjectItem(vonJSON, "LeftGain");
         if (cJSON_IsNumber(leftGainJSON)) {
             e.leftGain = (float)leftGainJSON->valuedouble;
+        } else if (old) {
+            e.leftGain = old->leftGain;
         }
 
         cJSON* rightGainJSON = cJSON_GetObjectItem(vonJSON, "RightGain");
         if (cJSON_IsNumber(rightGainJSON)) {
             e.rightGain = (float)rightGainJSON->valuedouble;
+        } else if (old) {
+            e.rightGain = old->rightGain;
         }
 
+        // Frequency
         cJSON* frequencyJSON = cJSON_GetObjectItem(vonJSON, "Frequency");
         if (cJSON_IsString(frequencyJSON)) {
             strncpy(e.txFreq, frequencyJSON->valuestring, sizeof(e.txFreq) - 1);
             trim_inplace(e.txFreq);
+        } else if (old) {
+            strncpy(e.txFreq, old->txFreq, sizeof(e.txFreq) - 1);
         }
 
+        // Time deviation
         cJSON* timeDeviationJSON = cJSON_GetObjectItem(vonJSON, "TimeDeviation");
         if (cJSON_IsNumber(timeDeviationJSON)) {
             e.txTimeDev = timeDeviationJSON->valueint;
+        } else if (old) {
+            e.txTimeDev = old->txTimeDev;
         }
 
+        // Connection quality
         cJSON* connectionQualityJSON = cJSON_GetObjectItem(vonJSON, "ConnectionQuality");
         if (cJSON_IsNumber(connectionQualityJSON)) {
             e.connQ = clampf((float)connectionQualityJSON->valuedouble, 0.0f, 1.0f);
+        } else if (old) {
+            e.connQ = old->connQ;
         }
 
+        // Faction
         cJSON* factionKeyJSON = cJSON_GetObjectItem(vonJSON, "FactionKey");
         if (cJSON_IsString(factionKeyJSON)) {
             strncpy(e.txFaction, factionKeyJSON->valuestring, sizeof(e.txFaction) - 1);
             trim_inplace(e.txFaction);
+        } else if (old) {
+            strncpy(e.txFaction, old->txFaction, sizeof(e.txFaction) - 1);
         }
 
-        /* NEW: MuffledDecibels (negative number) */
+        // Muffle
         cJSON* muffledDecibelsJSON = cJSON_GetObjectItem(vonJSON, "MuffledDecibels");
         if (cJSON_IsNumber(muffledDecibelsJSON)) {
             e.muffledDb = (float)muffledDecibelsJSON->valuedouble;
+        } else if (old) {
+            e.muffledDb = old->muffledDb;
         }
 
-        g_Von.entries[g_Von.count++] = e; 
+        // Mark update tick
+        e.lastUpdateTick = GetTickCount();
+
+        g_Von.entries[g_Von.count++] = e;
     }
 
     cJSON_Delete(vonDataJSON);
-
     g_Von.loaded = 1;
 }
 
@@ -1416,7 +1465,6 @@ static void unmute_all_clients(uint64 sch)
     ts3Functions.freeMemory(clients);
 }
 
-
 static DWORD WINAPI worker_main(LPVOID param)
 {
     (void)param;
@@ -1556,7 +1604,7 @@ PL_EXPORT const char* ts3plugin_name()
 }
 PL_EXPORT const char* ts3plugin_version()
 {
-    return "1.9.7";
+    return "1.9.8";
 }
 PL_EXPORT int ts3plugin_apiVersion()
 {
@@ -1715,6 +1763,21 @@ PL_EXPORT void ts3plugin_onClientMoveEvent(uint64 sch, anyID clientID, uint64 ol
     update_von_active_flag(sch);
 }
 
+static inline void silence_samples(short* samples, int sampleCount, int channels)
+{
+    if (channels <= 1) {
+        memset(samples, 0, sizeof(short) * sampleCount);
+    } else {
+        for (int i = 0; i < sampleCount; ++i) {
+            int idx          = i * channels;
+            samples[idx + 0] = 0;
+            samples[idx + 1] = 0;
+            for (int ch = 2; ch < channels; ++ch)
+                samples[idx + ch] = 0;
+        }
+    }
+}
+
 /* ---------------------------------------------------------------------------
    Audio (pure DSP)
 --------------------------------------------------------------------------- */
@@ -1730,18 +1793,26 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
         return;
 
     const VonEntry* e = find_entry(clientID);
-    
-    if (!e)
+    if (!e) {
+        silence_samples(samples, sampleCount, channels);
         return;
+    }
+
+    DWORD age = GetTickCount() - e->lastUpdateTick;
+    if (age > 250) { /* give a bit more grace than 250ms */
+        silence_samples(samples, sampleCount, channels);
+        return;
+    }
+
 
     /* ----------------------------- RADIO talkers ----------------------------- */
     if (e->type == VON_RADIO) {
         float     vol01    = 0.0f;
         int       stereo   = 0;
-        const int hasRadio = g_Radios.loaded ? 1 : 0; /* we always test below */
+        const int hasRadio = g_Radios.loaded ? 1 : 0;
         int       matched  = 0;
+
         if (hasRadio) {
-            /* match local radio by freq/timeDev/faction */
             for (size_t i = 0; i < g_Radios.count; ++i) {
                 RadioLocal* r = &g_Radios.list[i];
                 if (strcmp(r->freq, e->txFreq) != 0)
@@ -1851,39 +1922,40 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
             }
             return;
         } else {
-            /* DIRECT fallback using Left/Right + yell boost + MUFFLE */
+            /* ------------------ DIRECT fallback ------------------ */
             const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
             const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
             float       avg       = 0.5f * (lG + rG);
             float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
 
-            const float lMul = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-            const float rMul = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+            const float lTarget = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+            const float rTarget = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+
+            DirectState* ds = get_direct_state(clientID);
+            ds->smoothedL   = smooth_gain(ds->smoothedL, lTarget);
+            ds->smoothedR   = smooth_gain(ds->smoothedR, rTarget);
 
             const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
             const int   doMuf = (occDb > 0.1f) ? 1 : 0;
 
-            DirectState* ds = NULL;
-            float        fc = 8000.0f;
+            float fc = 8000.0f;
             if (doMuf) {
-                ds = get_direct_state(clientID);
-                fc = occlusion_db_to_fc(occDb); /* ~4.5k @12dB, ~2.7k @18dB */
+                fc = occlusion_db_to_fc(occDb);
                 if (fabsf(fc - ds->lastFc) > 10.0f) {
                     for (int i = 0; i < MUFFLE_STAGES; ++i) {
                         biquad_update_lowpass(&ds->lpL[i], TS_SAMPLE_RATE, fc, 0.9f);
                         biquad_update_lowpass(&ds->lpR[i], TS_SAMPLE_RATE, fc, 0.9f);
                         biquad_update_lowpass(&ds->lpM[i], TS_SAMPLE_RATE, fc, 0.9f);
                     }
-
                     ds->lastFc = fc;
                 }
             }
 
             if (channels <= 1) {
-                const float m = 0.5f * (lMul + rMul);
+                float mSmoothed = 0.5f * (ds->smoothedL + ds->smoothedR);
                 for (int i = 0; i < sampleCount; ++i) {
                     float x = (float)samples[i] / 32768.0f;
-                    x *= m;
+                    x *= mSmoothed;
                     if (doMuf) {
                         for (int s = 0; s < MUFFLE_STAGES; ++s)
                             x = biquad_tick(&ds->lpM[s], x);
@@ -1895,19 +1967,17 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
                     const int idx = i * channels;
                     float     L   = (float)samples[idx + 0] / 32768.0f;
                     float     R   = (float)samples[idx + 1] / 32768.0f;
-                    L *= lMul;
-                    R *= rMul;
+                    L *= ds->smoothedL;
+                    R *= ds->smoothedR;
                     if (doMuf) {
                         for (int s = 0; s < MUFFLE_STAGES; ++s) {
                             L = biquad_tick(&ds->lpL[s], L);
                             R = biquad_tick(&ds->lpR[s], R);
                         }
                     }
-                    const short Ls       = clamp_i16(L * 32767.0f);
-                    const short Rs       = clamp_i16(R * 32767.0f);
-                    samples[idx + 0]     = Ls;
-                    samples[idx + 1]     = Rs;
-                    const short monoFill = (short)((Ls + Rs) / 2);
+                    samples[idx + 0]     = clamp_i16(L * 32767.0f);
+                    samples[idx + 1]     = clamp_i16(R * 32767.0f);
+                    const short monoFill = (short)((samples[idx + 0] + samples[idx + 1]) / 2);
                     for (int ch = 2; ch < channels; ++ch)
                         samples[idx + ch] = monoFill;
                 }
@@ -1923,16 +1993,18 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
         float       avg       = 0.5f * (lG + rG);
         float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
 
-        const float lMul = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-        const float rMul = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+        const float lTarget = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+        const float rTarget = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+
+        DirectState* ds = get_direct_state(clientID);
+        ds->smoothedL   = smooth_gain(ds->smoothedL, lTarget);
+        ds->smoothedR   = smooth_gain(ds->smoothedR, rTarget);
 
         const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
         const int   doMuf = (occDb > 0.1f) ? 1 : 0;
 
-        DirectState* ds = NULL;
-        float        fc = 8000.0f;
+        float fc = 8000.0f;
         if (doMuf) {
-            ds = get_direct_state(clientID);
             fc = occlusion_db_to_fc(occDb);
             if (fabsf(fc - ds->lastFc) > 10.0f) {
                 for (int i = 0; i < MUFFLE_STAGES; ++i) {
@@ -1940,21 +2012,19 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
                     biquad_update_lowpass(&ds->lpR[i], TS_SAMPLE_RATE, fc, 0.9f);
                     biquad_update_lowpass(&ds->lpM[i], TS_SAMPLE_RATE, fc, 0.9f);
                 }
-
                 ds->lastFc = fc;
             }
         }
 
         if (channels <= 1) {
-            const float m = 0.5f * (lMul + rMul);
+            float mSmoothed = 0.5f * (ds->smoothedL + ds->smoothedR);
             for (int i = 0; i < sampleCount; ++i) {
                 float x = (float)samples[i] / 32768.0f;
-                x *= m;
+                x *= mSmoothed;
                 if (doMuf) {
                     for (int s = 0; s < MUFFLE_STAGES; ++s)
                         x = biquad_tick(&ds->lpM[s], x);
                 }
-
                 samples[i] = clamp_i16(x * 32767.0f);
             }
         } else {
@@ -1962,19 +2032,17 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
                 const int idx = i * channels;
                 float     L   = (float)samples[idx + 0] / 32768.0f;
                 float     R   = (float)samples[idx + 1] / 32768.0f;
-                L *= lMul;
-                R *= rMul;
+                L *= ds->smoothedL;
+                R *= ds->smoothedR;
                 if (doMuf) {
                     for (int s = 0; s < MUFFLE_STAGES; ++s) {
                         L = biquad_tick(&ds->lpL[s], L);
                         R = biquad_tick(&ds->lpR[s], R);
                     }
                 }
-                const short Ls       = clamp_i16(L * 32767.0f);
-                const short Rs       = clamp_i16(R * 32767.0f);
-                samples[idx + 0]     = Ls;
-                samples[idx + 1]     = Rs;
-                const short monoFill = (short)((Ls + Rs) / 2);
+                samples[idx + 0]     = clamp_i16(L * 32767.0f);
+                samples[idx + 1]     = clamp_i16(R * 32767.0f);
+                const short monoFill = (short)((samples[idx + 0] + samples[idx + 1]) / 2);
                 for (int ch = 2; ch < channels; ++ch)
                     samples[idx + ch] = monoFill;
             }

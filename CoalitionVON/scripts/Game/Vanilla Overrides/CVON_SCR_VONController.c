@@ -959,6 +959,11 @@ modded class SCR_VONController
 		}
 		return false;
 	}
+	
+	void ComputeSpectatorLR(int playerId, out float outLeft, out float outRight, out int silencedDecibels = 0)
+	{
+		//Fill in your spectator logic here
+	}
 
 	
 	//VONServerData.JSON
@@ -1075,6 +1080,10 @@ modded class SCR_VONController
 				right = 0;
 				frequency = "";
 			}
+			else if (container.m_bIsSpectator)
+			{
+				ComputeSpectatorLR(container.m_iPlayerId, left, right)
+			}
 			else if (Replication.FindItem(container.m_SenderRplId) && !container.m_SoundSource && container.m_fDistanceToSender != -1)
 			{
 				soundSource = RplComponent.Cast(Replication.FindItem(container.m_SenderRplId)).GetEntity();
@@ -1104,7 +1113,6 @@ modded class SCR_VONController
 				else
 					container.m_fConnectionQuality = GetSignalStrength(vector.Distance(localEntity.GetOrigin(), container.m_vSenderLocation), container.m_iMaxDistance);
 			}
-				
 				
 			VONSave.StartObject(m_PlayerController.GetPlayersTeamspeakClientId(container.m_iPlayerId).ToString());
 			VONSave.SetMaxDecimalPlaces(3);
