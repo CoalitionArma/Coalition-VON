@@ -1049,7 +1049,7 @@ modded class SCR_VONController
 				VONServerData.SaveToFile("$profile:/VONServerData.json");
 			}
 		}
-		#ifdef WORKBENCH
+		#ifdef ENABLE_DIAG
 		#else
 		//Hijack this whole process to load the initial warning menu
 		if (m_VONGameModeComponent.m_bTeamspeakChecks)
