@@ -278,7 +278,6 @@ class CVON_RadioComponent: ScriptComponent
 			m_sFrequency = m_aChannels.Get(0);
 		}
 		Replication.BumpMe();
-		
 		if (m_iTempChannel != m_iCurrentChannel || m_sTempFrequency != m_sFrequency || m_iTempTimeDeviation != m_iTimeDeviation || m_sTempFactionKey != m_sFactionKey)
 		{
 			m_iTempChannel = m_iCurrentChannel;
