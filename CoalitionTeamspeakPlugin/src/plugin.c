@@ -59,7 +59,6 @@ typedef uint16_t anyID;
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
 #endif
-#include <math.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846264338327950288
@@ -368,16 +367,17 @@ typedef struct {
     int      txTimeDev;
     float    connQ;
     char     txFaction[64];
-    float    muffledDb;      /* negative (e.g., 0, -12, -18) */
-    DWORD    lastUpdateTick; /* NEW: track last time we got valid JSON */
+    float    muffledDb;
+    DWORD    lastUpdateTick;
 } VonEntry;
 
-static struct {
+/* -------- Double-buffered snapshots -------- */
+typedef struct {
     VonEntry entries[MAX_TRACKED];
     size_t   count;
     int      loaded;
-    char     jsonPath[PATH_BUFSIZE];
-} g_Von = {{0}, 0, 0, {0}};
+    DWORD    buildTick;
+} VonSnapshot;
 
 typedef struct {
     char freq[64];
@@ -387,11 +387,23 @@ typedef struct {
     char faction[64];
 } RadioLocal;
 
-static struct {
+typedef struct {
     RadioLocal list[256];
     size_t     count;
     int        loaded;
-} g_Radios = {{0}, 0, 0};
+    DWORD      buildTick;
+} RadioSnapshot;
+
+/* Two buffers each; audio reads ACTIVE, worker writes INACTIVE */
+static VonSnapshot   g_VonSnap[2]   = {0};
+static RadioSnapshot g_RadioSnap[2] = {0};
+
+/* Active indices (0 or 1). Audio reads via atomic load; worker flips. */
+static volatile LONG g_vonActiveIdx   = 0;
+static volatile LONG g_radioActiveIdx = 0;
+
+/* Paths (was g_Von.jsonPath earlier) */
+static char g_VonPath[PATH_BUFSIZE] = {0};
 
 /* ServerData cache */
 static char  g_ServerPath[PATH_BUFSIZE] = {0};
@@ -618,6 +630,17 @@ static RadioState* get_radio_state(anyID id)
     return &g_radioStates[0];
 }
 
+static inline const VonSnapshot* get_active_von(void)
+{
+    LONG idx = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
+    return &g_VonSnap[(idx & 1)];
+}
+static inline const RadioSnapshot* get_active_radio(void)
+{
+    LONG idx = InterlockedCompareExchange(&g_radioActiveIdx, 0, 0);
+    return &g_RadioSnap[(idx & 1)];
+}
+
 /* Static/hiss generator: driven by quality only; optional SNR scaling with volume */
 static void radio_make_static(RadioState* st, float* out, int n, float volume01, float quality01)
 {
@@ -765,190 +788,125 @@ static inline float smooth_gain(float current, float target)
 /* ---------------------------------------------------------------------------
    JSON loaders (using reusable buffers)
 --------------------------------------------------------------------------- */
-static void load_json_snapshot(void)
+static int load_von_into(VonSnapshot* dst)
 {
-    g_Von.count  = 0;
-    g_Von.loaded = 0;
-    if (!g_Von.jsonPath[0])
-        return;
+    if (!g_VonPath[0])
+        return 0;
 
     long sz = 0;
-    if (!read_file_reuse(g_Von.jsonPath, &g_vonBuf, &g_vonCap, &sz))
-        return;
+    if (!read_file_reuse(g_VonPath, &g_vonBuf, &g_vonCap, &sz))
+        return 0;
 
-    cJSON* vonDataJSON = cJSON_Parse(g_vonBuf);
-    if (!vonDataJSON) {
-        const char* error = cJSON_GetErrorPtr();
-        if (error) {
-            logf("Error reading VONData: %s\n", error);
-        }
-        return;
-    }
+    cJSON* root = cJSON_Parse(g_vonBuf);
+    if (!root)
+        return 0;
 
-    cJSON* isTransmittingJSON = cJSON_GetObjectItem(vonDataJSON, "IsTransmitting");
-    if (cJSON_IsBool(isTransmittingJSON)) {
-        g_IsTransmitting = isTransmittingJSON->valueint;
-    }
+    size_t count = 0;
 
-    cJSON* vonJSON;
-    cJSON_ArrayForEach(vonJSON, vonDataJSON)
+    cJSON* tx = cJSON_GetObjectItem(root, "IsTransmitting");
+    if (cJSON_IsBool(tx))
+        g_IsTransmitting = tx->valueint;
+
+    cJSON* it;
+    cJSON_ArrayForEach(it, root)
     {
-        if (g_Von.count >= MAX_TRACKED)
-            break;
-
-        if (strcmp(vonJSON->string, "IsTransmitting") == 0)
+        if (!it->string || strcmp(it->string, "IsTransmitting") == 0)
             continue;
+        if (count >= MAX_TRACKED)
+            break;
 
         VonEntry e;
         memset(&e, 0, sizeof(e));
-        e.id           = (anyID)atoi(vonJSON->string);
-        e.type         = VON_DIRECT;
-        e.leftGain     = 0.0f;
-        e.rightGain    = 0.0f;
-        e.txFreq[0]    = '\0';
-        e.txTimeDev    = INT_MIN;
-        e.connQ        = 1.0f;
-        e.txFaction[0] = '\0';
-        e.muffledDb    = 0.0f;
+        e.id        = (anyID)atoi(it->string);
+        e.type      = VON_DIRECT;
+        e.connQ     = 1.0f;
+        e.txTimeDev = INT_MIN;
 
-        // Find last known entry for this ID
-        const VonEntry* old = NULL;
-        for (size_t j = 0; j < g_Von.count; ++j) {
-            if (g_Von.entries[j].id == e.id) {
-                old = &g_Von.entries[j];
-                break;
-            }
-        }
-
-        // Type
-        cJSON* vonTypeJSON = cJSON_GetObjectItem(vonJSON, "VONType");
-        if (cJSON_IsNumber(vonTypeJSON)) {
-            e.type = (vonTypeJSON->valueint == 1) ? VON_RADIO : VON_DIRECT;
-        } else if (old) {
-            e.type = old->type;
-        }
-
-        // Gains
-        cJSON* leftGainJSON = cJSON_GetObjectItem(vonJSON, "LeftGain");
-        if (cJSON_IsNumber(leftGainJSON)) {
-            e.leftGain = (float)leftGainJSON->valuedouble;
-        } else if (old) {
-            e.leftGain = old->leftGain;
-        }
-
-        cJSON* rightGainJSON = cJSON_GetObjectItem(vonJSON, "RightGain");
-        if (cJSON_IsNumber(rightGainJSON)) {
-            e.rightGain = (float)rightGainJSON->valuedouble;
-        } else if (old) {
-            e.rightGain = old->rightGain;
-        }
-
-        // Frequency
-        cJSON* frequencyJSON = cJSON_GetObjectItem(vonJSON, "Frequency");
-        if (cJSON_IsString(frequencyJSON)) {
-            strncpy(e.txFreq, frequencyJSON->valuestring, sizeof(e.txFreq) - 1);
+        cJSON* v;
+        v = cJSON_GetObjectItem(it, "VONType");
+        if (cJSON_IsNumber(v))
+            e.type = (v->valueint == 1) ? VON_RADIO : VON_DIRECT;
+        v = cJSON_GetObjectItem(it, "LeftGain");
+        if (cJSON_IsNumber(v))
+            e.leftGain = (float)v->valuedouble;
+        v = cJSON_GetObjectItem(it, "RightGain");
+        if (cJSON_IsNumber(v))
+            e.rightGain = (float)v->valuedouble;
+        v = cJSON_GetObjectItem(it, "Frequency");
+        if (cJSON_IsString(v)) {
+            strncpy(e.txFreq, v->valuestring, sizeof(e.txFreq) - 1);
             trim_inplace(e.txFreq);
-        } else if (old) {
-            strncpy(e.txFreq, old->txFreq, sizeof(e.txFreq) - 1);
         }
-
-        // Time deviation
-        cJSON* timeDeviationJSON = cJSON_GetObjectItem(vonJSON, "TimeDeviation");
-        if (cJSON_IsNumber(timeDeviationJSON)) {
-            e.txTimeDev = timeDeviationJSON->valueint;
-        } else if (old) {
-            e.txTimeDev = old->txTimeDev;
-        }
-
-        // Connection quality
-        cJSON* connectionQualityJSON = cJSON_GetObjectItem(vonJSON, "ConnectionQuality");
-        if (cJSON_IsNumber(connectionQualityJSON)) {
-            e.connQ = clampf((float)connectionQualityJSON->valuedouble, 0.0f, 1.0f);
-        } else if (old) {
-            e.connQ = old->connQ;
-        }
-
-        // Faction
-        cJSON* factionKeyJSON = cJSON_GetObjectItem(vonJSON, "FactionKey");
-        if (cJSON_IsString(factionKeyJSON)) {
-            strncpy(e.txFaction, factionKeyJSON->valuestring, sizeof(e.txFaction) - 1);
+        v = cJSON_GetObjectItem(it, "TimeDeviation");
+        if (cJSON_IsNumber(v))
+            e.txTimeDev = v->valueint;
+        v = cJSON_GetObjectItem(it, "ConnectionQuality");
+        if (cJSON_IsNumber(v))
+            e.connQ = clampf((float)v->valuedouble, 0.0f, 1.0f);
+        v = cJSON_GetObjectItem(it, "FactionKey");
+        if (cJSON_IsString(v)) {
+            strncpy(e.txFaction, v->valuestring, sizeof(e.txFaction) - 1);
             trim_inplace(e.txFaction);
-        } else if (old) {
-            strncpy(e.txFaction, old->txFaction, sizeof(e.txFaction) - 1);
         }
+        v = cJSON_GetObjectItem(it, "MuffledDecibels");
+        if (cJSON_IsNumber(v))
+            e.muffledDb = (float)v->valuedouble;
 
-        // Muffle
-        cJSON* muffledDecibelsJSON = cJSON_GetObjectItem(vonJSON, "MuffledDecibels");
-        if (cJSON_IsNumber(muffledDecibelsJSON)) {
-            e.muffledDb = (float)muffledDecibelsJSON->valuedouble;
-        } else if (old) {
-            e.muffledDb = old->muffledDb;
-        }
-
-        // Mark update tick
         e.lastUpdateTick = GetTickCount();
 
-        g_Von.entries[g_Von.count++] = e;
+        dst->entries[count++] = e;
     }
 
-    cJSON_Delete(vonDataJSON);
-    g_Von.loaded = 1;
+    cJSON_Delete(root);
+
+    dst->count     = count;
+    dst->loaded    = 1;
+    dst->buildTick = GetTickCount();
+    return 1;
 }
 
-static void load_radio_snapshot(void)
+static int load_radio_into(RadioSnapshot* dst)
 {
-    g_Radios.count  = 0;
-    g_Radios.loaded = 0;
     if (!g_RadioPath[0])
-        return;
+        return 0;
+
     long sz = 0;
     if (!read_file_reuse(g_RadioPath, &g_radioBuf, &g_radioCap, &sz))
-        return;
+        return 0;
 
-    cJSON* radioDataJSON = cJSON_Parse(g_radioBuf);
-    if (radioDataJSON == NULL) {
-        const char* error = cJSON_GetErrorPtr();
-        if (error != NULL) {
-            logf("Error reading RadioData: %s\n", error);
-        }
-        return;
-    }
+    cJSON* root = cJSON_Parse(g_radioBuf);
+    if (!root)
+        return 0;
 
-    cJSON* radioJSON;
-    cJSON_ArrayForEach(radioJSON, radioDataJSON) {
-        if (g_Radios.count >= (sizeof(g_Radios.list) / sizeof(g_Radios.list[0])))
+    size_t count = 0;
+    cJSON* it;
+    cJSON_ArrayForEach(it, root)
+    {
+        if (count >= (sizeof(dst->list) / sizeof(dst->list[0])))
             break;
 
         RadioLocal r;
         memset(&r, 0, sizeof(r));
         r.timeDev = INT_MIN;
-        r.volStep = 0;
-        r.stereo  = 0;
 
-        cJSON* freqJSON = cJSON_GetObjectItem(radioJSON, "Freq");
-        if (cJSON_IsString(freqJSON)) {
-            strncpy(r.freq, freqJSON->valuestring, sizeof(r.freq) - 1);
+        cJSON* v;
+        v = cJSON_GetObjectItem(it, "Freq");
+        if (cJSON_IsString(v)) {
+            strncpy(r.freq, v->valuestring, sizeof(r.freq) - 1);
             trim_inplace(r.freq);
         }
-
-        cJSON* timeDeviationJSON = cJSON_GetObjectItem(radioJSON, "TimeDeviation");
-        if (cJSON_IsNumber(timeDeviationJSON)) {
-            r.timeDev = timeDeviationJSON->valueint;
-        }
-
-        cJSON* volumeJSON = cJSON_GetObjectItem(radioJSON, "Volume");
-        if (cJSON_IsNumber(volumeJSON)) {
-            r.volStep = volumeJSON->valueint;
-        }
-
-        cJSON* stereoJSON = cJSON_GetObjectItem(radioJSON, "Stereo");
-        if (cJSON_IsNumber(stereoJSON)) {
-            r.stereo = stereoJSON->valueint;
-        }
-
-        cJSON* factionKeyJSON = cJSON_GetObjectItem(radioJSON, "FactionKey");
-        if (cJSON_IsString(factionKeyJSON)) {
-            strncpy(r.faction, factionKeyJSON->valuestring, sizeof(r.freq) - 1);
+        v = cJSON_GetObjectItem(it, "TimeDeviation");
+        if (cJSON_IsNumber(v))
+            r.timeDev = v->valueint;
+        v = cJSON_GetObjectItem(it, "Volume");
+        if (cJSON_IsNumber(v))
+            r.volStep = v->valueint;
+        v = cJSON_GetObjectItem(it, "Stereo");
+        if (cJSON_IsNumber(v))
+            r.stereo = v->valueint;
+        v = cJSON_GetObjectItem(it, "FactionKey");
+        if (cJSON_IsString(v)) {
+            strncpy(r.faction, v->valuestring, sizeof(r.faction) - 1);
             trim_inplace(r.faction);
         }
 
@@ -958,13 +916,17 @@ static void load_radio_snapshot(void)
             r.volStep = 9;
         if (r.stereo < 0 || r.stereo > 2)
             r.stereo = 0;
+
         if (r.freq[0])
-            g_Radios.list[g_Radios.count++] = r;
+            dst->list[count++] = r;
     }
 
-    cJSON_Delete(radioDataJSON);
+    cJSON_Delete(root);
 
-    g_Radios.loaded = 1;
+    dst->count     = count;
+    dst->loaded    = 1;
+    dst->buildTick = GetTickCount();
+    return 1;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1395,9 +1357,12 @@ static void unmute_client(uint64 sch, anyID clientID)
 
 static const VonEntry* find_entry(anyID clientID)
 {
-    for (size_t i = 0; i < g_Von.count; ++i)
-        if (g_Von.entries[i].id == clientID)
-            return &g_Von.entries[i];
+    const VonSnapshot* snap = get_active_von();
+    if (!snap || !snap->loaded)
+        return NULL;
+    for (size_t i = 0; i < snap->count; ++i)
+        if (snap->entries[i].id == clientID)
+            return &snap->entries[i];
     return NULL;
 }
 
@@ -1536,18 +1501,17 @@ static DWORD WINAPI worker_main(LPVOID param)
         /* ---------------- VONData + mute enforcement ---------------- */
         if (now >= g_nextVonReloadTick) {
             g_nextVonReloadTick = now + VONDATA_RELOAD_MS;
-            FILETIME wt;
-            int      reloaded = 0;
 
-            if (g_Von.jsonPath[0]) {
+            if (g_VonPath[0]) {
                 FILETIME wt;
-                int      changed = file_modified_since_last(g_Von.jsonPath, &g_vonDataWatch, &wt);
-                if (changed) {
-                    load_json_snapshot();
-                    reloaded = 1;
+                if (file_modified_since_last(g_VonPath, &g_vonDataWatch, &wt)) {
+                    LONG readIdx  = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
+                    LONG writeIdx = (readIdx ^ 1) & 1; /* inactive buffer */
+                    if (load_von_into(&g_VonSnap[writeIdx])) {
+                        InterlockedExchange(&g_vonActiveIdx, writeIdx); /* publish */
+                    }
                 }
             }
-
 
             if (sch) {
                 if (g_SD_inGame)
@@ -1560,9 +1524,15 @@ static DWORD WINAPI worker_main(LPVOID param)
         /* ---------------- RadioData reload ---------------- */
         if (now >= g_nextRadioReloadTick) {
             g_nextRadioReloadTick = now + RADIODATA_RELOAD_MS;
-            FILETIME wt;
-            if (g_RadioPath[0] && file_modified_since_last(g_RadioPath, &g_radioWatch, &wt)) {
-                load_radio_snapshot();
+            if (g_RadioPath[0]) {
+                FILETIME wt;
+                if (file_modified_since_last(g_RadioPath, &g_radioWatch, &wt)) {
+                    LONG readIdx  = InterlockedCompareExchange(&g_radioActiveIdx, 0, 0);
+                    LONG writeIdx = (readIdx ^ 1) & 1;
+                    if (load_radio_into(&g_RadioSnap[writeIdx])) {
+                        InterlockedExchange(&g_radioActiveIdx, writeIdx);
+                    }
+                }
             }
         }
 
@@ -1604,7 +1574,7 @@ PL_EXPORT const char* ts3plugin_name()
 }
 PL_EXPORT const char* ts3plugin_version()
 {
-    return "1.9.8";
+    return "1.9.9";
 }
 PL_EXPORT int ts3plugin_apiVersion()
 {
@@ -1628,11 +1598,12 @@ PL_EXPORT int ts3plugin_init()
     InitializeCriticalSection(&g_radioLock);
     InitializeCriticalSection(&g_directLock); /* NEW */
 
-    buildVONDataPath(g_Von.jsonPath, sizeof(g_Von.jsonPath));
+    buildVONDataPath(g_VonPath, sizeof(g_VonPath));
     buildServerJsonPath(g_ServerPath, sizeof(g_ServerPath));
     buildRadioJsonPath(g_RadioPath, sizeof(g_RadioPath));
-    if (g_Von.jsonPath[0])
-        ensureParentDirExists(g_Von.jsonPath);
+
+    if (g_VonPath[0])
+        ensureParentDirExists(g_VonPath);
     if (g_ServerPath[0])
         ensureParentDirExists(g_ServerPath);
     if (g_RadioPath[0])
@@ -1651,13 +1622,26 @@ PL_EXPORT int ts3plugin_init()
     g_lastServerWritten.valid  = 0;
     InterlockedExchange(&g_inVonActiveFlag, 0);
 
-    g_directCount = 0; /* NEW */
+       g_directCount = 0;
 
-    load_json_snapshot();
+    /* Build initial snapshots so audio has something valid to read */
+    {
+        /* VON */
+        LONG w = 0;
+        memset(&g_VonSnap[w], 0, sizeof(g_VonSnap[w]));
+        load_von_into(&g_VonSnap[w]); /* best effort */
+        InterlockedExchange(&g_vonActiveIdx, w);
+
+        /* Radio */
+        w = 0;
+        memset(&g_RadioSnap[w], 0, sizeof(g_RadioSnap[w]));
+        load_radio_into(&g_RadioSnap[w]); /* best effort */
+        InterlockedExchange(&g_radioActiveIdx, w);
+    }
+
     if (ts3Functions.getCurrentServerConnectionHandlerID()) {
         apply_proximity_muting(ts3Functions.getCurrentServerConnectionHandlerID());
     }
-    load_radio_snapshot();
     read_serverdata_from_disk();
     write_serverdata_if_changed(0);
 
@@ -1807,14 +1791,15 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
 
     /* ----------------------------- RADIO talkers ----------------------------- */
     if (e->type == VON_RADIO) {
-        float     vol01    = 0.0f;
-        int       stereo   = 0;
-        const int hasRadio = g_Radios.loaded ? 1 : 0;
-        int       matched  = 0;
+        float                vol01    = 0.0f;
+        int                  stereo   = 0;
+        const RadioSnapshot* rSnap    = get_active_radio();
+        const int            hasRadio = (rSnap && rSnap->loaded) ? 1 : 0;
+        int                  matched  = 0;
 
         if (hasRadio) {
-            for (size_t i = 0; i < g_Radios.count; ++i) {
-                RadioLocal* r = &g_Radios.list[i];
+            for (size_t i = 0; i < rSnap->count; ++i) {
+                RadioLocal* r = (RadioLocal*)&rSnap->list[i];
                 if (strcmp(r->freq, e->txFreq) != 0)
                     continue;
                 if (!(r->timeDev == INT_MIN || e->txTimeDev == INT_MIN || r->timeDev == e->txTimeDev))

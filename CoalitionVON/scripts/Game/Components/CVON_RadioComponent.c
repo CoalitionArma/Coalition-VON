@@ -421,4 +421,37 @@ class CVON_RadioComponent: ScriptComponent
 		}
 		VONSave.SaveToFile("$profile:/RadioData.json");
 	}
+	
+	void ~CVON_RadioComponent()
+	{
+		if (!GetGame().GetWorld())
+			return;
+		
+		PlayerManager playerMan = GetGame().GetPlayerManager();
+		if (System.IsConsoleApp())
+		{
+			array<int> playerIds = {};
+			playerMan.GetPlayers(playerIds);
+			foreach (int playerId: playerIds)
+			{
+				SCR_PlayerController playerCon = SCR_PlayerController.Cast(playerMan.GetPlayerController(playerId));
+				if (!playerCon)
+					continue;
+				
+				if (!playerCon.m_aRadios.Contains(GetOwner()))
+					continue;
+				
+				playerCon.m_aRadios.RemoveItemOrdered(GetOwner());
+			}
+		}
+		else
+		{
+			SCR_PlayerController playerCon = SCR_PlayerController.Cast(GetGame().GetPlayerController());
+			if (!playerCon)
+				return;
+			
+			if (playerCon.m_aRadios.Contains(GetOwner()))
+				playerCon.m_aRadios.RemoveItemOrdered(GetOwner());
+		}
+	}
 }
