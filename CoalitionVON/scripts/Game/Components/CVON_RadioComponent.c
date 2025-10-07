@@ -82,7 +82,7 @@ class CVON_RadioComponent: ScriptComponent
 	
 	//Called on the authority, updates the Frequency.
 	//==========================================================================================================================================================================
-	void UpdateFrequncyServer(string freq, int input = -1)
+	void UpdateFrequncyServer(string freq, int input = -1, bool updateSettings = true)
 	{
 		//Update the channels array for the new freq
 		if (m_aChannels.Count() >= m_iCurrentChannel)
@@ -106,8 +106,9 @@ class CVON_RadioComponent: ScriptComponent
 			isShared = true;
 			m_sFactionKey = sharedFactionKey;
 		}
-		if (!isShared)
-				m_sFactionKey = ownerFactionKey;
+		int playerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(GetOwner().GetRootParent());
+		if (playerId > 0 && updateSettings)
+			SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).UpdateSettings();
 		Replication.BumpMe();
 	}
 	
@@ -169,7 +170,9 @@ class CVON_RadioComponent: ScriptComponent
 	//==========================================================================================================================================================================
 	void UpdateFrequencyClient(string input)
 	{
-		SCR_PlayerController.Cast(GetGame().GetPlayerController()).UpdateRadioFrequency(input, GetRplId());
+		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerController());
+		pc.UpdateRadioFrequency(input, GetRplId());
+		GetGame().GetCallqueue().CallLater(pc.UpdateSettings, 500, false);
 		WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
 	}
 	
@@ -190,9 +193,10 @@ class CVON_RadioComponent: ScriptComponent
 	//==========================================================================================================================================================================
 	override void OnPostInit(IEntity owner)
 	{
+		super.OnPostInit(owner);
 		if (!CVON_VONGameModeComponent.GetInstance())
 			return;
-		SetEventMask(owner, EntityEvent.FIXEDFRAME);
+		SetEventMask(owner, EntityEvent.FRAME);
 	}
 	
 	bool IsAlreadyAChannel(string freq, array<string> LRFreqs, array<string> SRFreqs)
@@ -202,9 +206,30 @@ class CVON_RadioComponent: ScriptComponent
 	
 	//Handles assigning 
 	//==========================================================================================================================================================================
-	override void EOnFixedFrame(IEntity owner, float timeSlice)
+	override void EOnFrame(IEntity owner, float timeSlice)
 	{
+		super.EOnFrame(owner, timeSlice);
+		if (System.IsConsoleApp())
+		{
+			//Redundancy, also used in base CVON without the CRF as they don't have the GS.
+			if (m_sFactionKey == "")
+				InitializeRadios();
+			return;
+		}
+			
 		
+		if (m_iTempChannel != m_iCurrentChannel || m_sTempFrequency != m_sFrequency || m_iTempTimeDeviation != m_iTimeDeviation || m_sTempFactionKey != m_sFactionKey)
+		{
+			m_iTempChannel = m_iCurrentChannel;
+			m_sTempFrequency = m_sFrequency;
+			m_iTempTimeDeviation = m_iTimeDeviation;
+			m_sTempFactionKey = m_sFactionKey;
+			WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
+		}
+	}
+	
+	void InitializeRadios()
+	{
 		//Have this ifdef here cause in the workshop its a listen server, I explain the code in the non workshop version.
 		#ifdef WORKBENCH
 		if (m_sFactionKey != "")
@@ -219,7 +244,9 @@ class CVON_RadioComponent: ScriptComponent
 		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(GetOwner().GetRootParent().FindComponent(FactionAffiliationComponent));
 		if (!factionComp)
 			return;
+	
 		m_sFactionKey = factionComp.GetAffiliatedFactionKey();
+		
 		SCR_Faction faction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sFactionKey));
 		ref array<string> SRFrequencies = {};
 		ref array<string> LRFrequencies = {};
@@ -278,14 +305,6 @@ class CVON_RadioComponent: ScriptComponent
 			m_sFrequency = m_aChannels.Get(0);
 		}
 		Replication.BumpMe();
-		if (m_iTempChannel != m_iCurrentChannel || m_sTempFrequency != m_sFrequency || m_iTempTimeDeviation != m_iTimeDeviation || m_sTempFactionKey != m_sFactionKey)
-		{
-			m_iTempChannel = m_iCurrentChannel;
-			m_sTempFrequency = m_sFrequency;
-			m_iTempTimeDeviation = m_iTimeDeviation;
-			m_sTempFactionKey = m_sFactionKey;
-			WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
-		}
 		#else
 		if (System.IsConsoleApp())
 		{
@@ -295,7 +314,7 @@ class CVON_RadioComponent: ScriptComponent
 		
 			if (!GetOwner().GetRootParent())
 				return;
-	
+			
 			//Radio is in the inventory of a player.
 			if (!SCR_ChimeraCharacter.Cast(GetOwner().GetRootParent()))
 				return;
@@ -303,6 +322,7 @@ class CVON_RadioComponent: ScriptComponent
 			FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(GetOwner().GetRootParent().FindComponent(FactionAffiliationComponent));
 			if (!factionComp)
 				return;
+			
 			m_sFactionKey = factionComp.GetAffiliatedFactionKey();
 			//Add that faction to this radio and get the faction to prep to load the factions frequencies
 			SCR_Faction faction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sFactionKey));
@@ -366,18 +386,6 @@ class CVON_RadioComponent: ScriptComponent
 			//hehe
 			Replication.BumpMe();
 		}
-		else
-		{
-			//Woah the client, just checking if anythings changed, this is mostly redundant but neccessary mostly for unit creation and onccupation.
-			if (m_iTempChannel != m_iCurrentChannel || m_sTempFrequency != m_sFrequency || m_iTempTimeDeviation != m_iTimeDeviation || m_sTempFactionKey != m_sFactionKey)
-			{
-				m_iTempChannel = m_iCurrentChannel;
-				m_sTempFrequency = m_sFrequency;
-				m_iTempTimeDeviation = m_iTimeDeviation;
-				m_sTempFactionKey = m_sFactionKey;
-				WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
-			}
-		}
 		#endif
 	}
 	
@@ -406,15 +414,15 @@ class CVON_RadioComponent: ScriptComponent
 		{
 			IEntity radioEntity = RplComponent.Cast(Replication.FindItem(radio)).GetEntity();
 			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
-			if (!radioComp.m_bPower)
+			if (!m_bPower)
 				continue;
 			VONSave.StartObject(radio.ToString());
-			VONSave.WriteValue("Freq", radioComp.m_sFrequency);
-			VONSave.WriteValue("TimeDeviation", radioComp.m_iTimeDeviation);
-			VONSave.WriteValue("Volume", radioComp.m_iVolume);
-			VONSave.WriteValue("Stereo", radioComp.m_eStereo);
+			VONSave.WriteValue("Freq", m_sFrequency);
+			VONSave.WriteValue("TimeDeviation", m_iTimeDeviation);
+			VONSave.WriteValue("Volume", m_iVolume);
+			VONSave.WriteValue("Stereo", m_eStereo);
 			if (CVON_VONGameModeComponent.GetInstance().m_bUseFactionEcncryption)
-				VONSave.WriteValue("FactionKey", radioComp.m_sFactionKey);
+				VONSave.WriteValue("FactionKey", m_sFactionKey);
 			else
 				VONSave.WriteValue("FactionKey", "");
 			VONSave.EndObject();

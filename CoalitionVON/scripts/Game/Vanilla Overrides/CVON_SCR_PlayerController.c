@@ -70,23 +70,18 @@ modded class SCR_PlayerController
 		super.OnControlledEntityChanged(from, to);
 		if (!CVON_VONGameModeComponent.GetInstance())
 			return;
+		UpdateSettings();
+		
 		GetGame().GetCallqueue().CallLater(InitializeRadios, 500, false, to);
 	}
 	
-	override void OnDestroyed(notnull Instigator killer)
+	void UpdateSettings()
 	{
-		super.OnDestroyed(killer);
-		if (!CVON_VONGameModeComponent.GetInstance())
-			return;
-		#ifdef WORKBENCH
-		#else
-		if (!System.IsConsoleApp())
-			return;
-		#endif		
 		m_aRadioSettings.Clear();
-		
 		foreach (IEntity radio: m_aRadios)
 		{
+			if (!radio)
+				continue;
 			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 			SCR_FactionManager factionMan = SCR_FactionManager.Cast(GetGame().GetFactionManager());
 			if (radioComp.m_sFactionKey != "" && radioComp.m_sFactionKey != factionMan.GetPlayerFaction(GetPlayerId()).GetFactionKey())
@@ -155,7 +150,24 @@ modded class SCR_PlayerController
 		IEntity radioEntity = RplComponent.Cast(Replication.FindItem(radios.Get(0))).GetEntity();
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
 		if (GetGame().GetPlayerController())
+		{
 			radioComp.WriteJSON(to);
+			if (m_aRadioSettings.Count() > 0)
+			{
+				foreach (IEntity radio: m_aRadios)
+				{
+					CVON_RadioComponent radioCompSetting = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					int index = m_aRadios.Find(radio);
+					if (m_aRadioSettings.Count() <= index)
+						break;
+					CVON_RadioSettingObject radioSetting = m_aRadioSettings.Get(index);
+					
+					radioCompSetting.m_iVolume = radioSetting.m_iVolume;
+					radioCompSetting.m_eStereo = radioSetting.m_Stereo;
+				}
+				return;
+			}
+		}
 	}
 	
 	//mmmmgetter

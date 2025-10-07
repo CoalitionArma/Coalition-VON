@@ -9,7 +9,7 @@ modded class SCR_GroupsManagerComponent
 			super.TunePlayersFrequency(playerId, player);
 			return;
 		}
-		GetGame().GetCallqueue().CallLater(TuneFreqDelayWithPresets, 500, false, playerId, player);
+		GetGame().GetCallqueue().CallLater(TuneFreqDelayWithPresets, 600, false, playerId, player);
 	}
 	
 	//Is there any preset frequencies, used to determine if we use these customs freqs or vanilla.
@@ -37,7 +37,7 @@ modded class SCR_GroupsManagerComponent
 		int playerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(player);
 		if (playerId == -1)
 			return;
-		GetGame().GetCallqueue().CallLater(TuneFreqDelayWithPresets, 500, false, playerId, player);
+		GetGame().GetCallqueue().CallLater(TuneFreqDelayWithPresets, 600, false, playerId, player);
 	}
 	
 	//Needed so we wait for the group to initialize
@@ -58,23 +58,30 @@ modded class SCR_GroupsManagerComponent
 		if (!playerController)
 			return;
 		
+		int SRIndex = 0;
+		int LRIndex = 0;
+		array<IEntity> radiosDone = {};
 		if (playerController.m_aRadioSettings.Count() > 0)
 		{
 			foreach (IEntity radio: playerController.m_aRadios)
 			{
 				CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
-				CVON_RadioSettingObject radioSetting = playerController.m_aRadioSettings.Get(playerController.m_aRadios.Find(radio));
+				int index = playerController.m_aRadios.Find(radio);
+				if (playerController.m_aRadioSettings.Count() <= index)
+					break;
+				CVON_RadioSettingObject radioSetting = playerController.m_aRadioSettings.Get(index);
 				
 				if (radioComp.m_aChannels.Contains(radioSetting.m_sFreq))
-						radioComp.UpdateChannelServer(radioComp.m_aChannels.Find(radioSetting.m_sFreq) + 1);
+				{
+					radioComp.UpdateChannelServer(radioComp.m_aChannels.Find(radioSetting.m_sFreq) + 1);
+					radioComp.UpdateFrequncyServer(radioSetting.m_sFreq, -1, false);
+					radiosDone.Insert(radio);
+					if (radioComp.m_eRadioType == 0)
+						SRIndex++;
 					else
-						radioComp.UpdateChannelServer(radioComp.m_aChannels.Count() + 1);
-				
-				radioComp.UpdateFrequncyServer(radioSetting.m_sFreq);
-				playerController.SetVolumeFromServer(radioSetting.m_iVolume, playerController.m_aRadios.Find(radio));
-				playerController.SetStereoFromServer(radioSetting.m_Stereo, playerController.m_aRadios.Find(radio));
+						LRIndex++;
+				}			
 			}
-			return;
 		}
 		
 		SCR_Faction playerFaction = SCR_Faction.Cast(SCR_FactionManager.Cast(GetGame().GetFactionManager()).GetPlayerFaction(playerId));
@@ -95,6 +102,7 @@ modded class SCR_GroupsManagerComponent
 		string playersGroupName = string.Format(format, company, platoon, squad, character);
 		CVON_GroupFrequencyContainer freqContainer;
 		CVON_VONGameModeComponent gamemodeComp = CVON_VONGameModeComponent.GetInstance();
+		SCR_FactionManager factionMan = SCR_FactionManager.Cast(GetGame().GetFactionManager());
 		if (gamemodeComp.m_FreqConfig)
 		{
 			foreach (CVON_GroupFrequencyContainer freqItem: gamemodeComp.m_FreqConfig.m_aPresetGroupFrequencyContainers)
@@ -120,10 +128,10 @@ modded class SCR_GroupsManagerComponent
 				break;
 			}
 		}
-		int SRIndex = 0;
-		int LRIndex = 0;
 		for (int i = 0; i < playerController.m_aRadios.Count(); i++)
 		{
+			if (radiosDone.Contains(playerController.m_aRadios.Get(i)))
+				continue;
 			bool m_bFrequencyFound = false;
 			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(playerController.m_aRadios.Get(i).FindComponent(CVON_RadioComponent));
 			if (!freqContainer)

@@ -21,6 +21,11 @@ modded class SCR_CharacterInventoryStorageComponent
 		
 		if (GetGame().GetPlayerController())
 			CVON_RadioComponent.Cast(item.FindComponent(CVON_RadioComponent)).WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
+		else
+		{
+			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(item.FindComponent(CVON_RadioComponent));
+			radioComp.InitializeRadios();
+		}
 		
 		SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).m_aRadios.Insert(item);
 	}
