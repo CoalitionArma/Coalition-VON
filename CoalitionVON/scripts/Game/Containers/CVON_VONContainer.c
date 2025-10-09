@@ -38,6 +38,8 @@ class CVON_VONContainer
 	//PlayerId
 	int m_iPlayerId;
 	
+	bool m_bIsSpectator = false;
+	
 	
 	
 	// Values processed by the client itself

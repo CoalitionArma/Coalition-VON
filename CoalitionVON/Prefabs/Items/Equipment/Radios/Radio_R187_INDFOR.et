@@ -49,10 +49,11 @@ GenericEntity : "{5879D8E9C56E358D}Prefabs/Items/Core/Radio_base.et" {
     }
     CustomAttributes {
      PreviewRenderAttributes "{6646A07715127444}" {
-      CameraOrbitAngles 20 180 0
-      CameraDistanceToItem 2
-      CameraOffset 0 0 0
-      ItemRenderRotation 90 180 180
+      CameraOrbitAngles 0 0 0
+      CameraDistanceToItem 0.25
+      CameraOffset 0 -0.07 0
+      ItemRenderRotation 0 180 0
+      FOV 60
       AspectRatio 1
      }
      SCR_VONPreviewAttributes "{6646A07715127449}" {
@@ -62,6 +63,8 @@ GenericEntity : "{5879D8E9C56E358D}Prefabs/Items/Core/Radio_base.et" {
       AspectRatio 1
      }
     }
+    CommonItemType "NONE"
+    m_SlotType SLOT_LOOT_STORAGE
     m_bStackable 0
    }
   }

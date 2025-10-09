@@ -5,7 +5,7 @@ modded enum ChimeraMenuPreset
 
 class CVON_WarningMenu: ChimeraMenuBase
 {
-	const string LINK_TO_COPY = "https://github.com/CoalitionArma/Coalition-VON/releases/tag/Release";
+	const string LINK_TO_COPY = "https://github.com/CoalitionArma/Coalition-VON/releases";
 	SCR_ButtonTextComponent m_wCopyButton;
 	Widget m_wRoot;
 	SCR_PlayerController m_PlayerController;
@@ -44,8 +44,8 @@ class CVON_WarningMenu: ChimeraMenuBase
 	
 	override void OnMenuClose()
 	{
-//		if (m_PlayerController.GetTeamspeakClientId() == 0 && m_PlayerController.m_sTeamspeakPluginVersion != m_VONGamemode.m_sTeamspeakPluginVersion)
-//			GetGame().GetMenuManager().OpenMenu(ChimeraMenuPreset.CVON_WarningMenu);
+		if (m_PlayerController.GetTeamspeakClientId() == 0 && m_PlayerController.m_sTeamspeakPluginVersion != m_VONGamemode.m_sTeamspeakPluginVersion)
+			GetGame().GetMenuManager().OpenMenu(ChimeraMenuPreset.CVON_WarningMenu);
 	}
 	
 	void CopyToClipboard()

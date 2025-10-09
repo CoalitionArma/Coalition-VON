@@ -110,6 +110,24 @@ modded class SCR_VONMenu
 		ref array<IEntity> itemsAdded = {};
 		foreach (SCR_VONEntry entry : entries)
 		{
+			if (!SCR_VONEntryRadio.Cast(entry).GetTransceiver())
+			{
+				m_VONController.RemoveEntry(entry);
+				continue;
+			}
+			
+			if (!SCR_VONEntryRadio.Cast(entry).GetTransceiver().GetRadio())
+			{
+				m_VONController.RemoveEntry(entry);
+				continue;
+			}
+			
+			if (!SCR_VONEntryRadio.Cast(entry).GetTransceiver().GetRadio().GetOwner())
+			{
+				m_VONController.RemoveEntry(entry);
+				continue;
+			}
+				
 			if (itemsAdded.Contains(SCR_VONEntryRadio.Cast(entry).GetTransceiver().GetRadio().GetOwner()))
 				continue;
 			AddRadialEntry(entry);

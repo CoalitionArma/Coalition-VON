@@ -179,7 +179,7 @@ modded class SCR_VONController
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
 		radioComp.m_eStereo = CVON_EStereo.RIGHT;
 		radioComp.WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
-		m_VONHud.ShowVONChange();
+		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
 	}
 	
 	//Change ear keybind
@@ -192,7 +192,7 @@ modded class SCR_VONController
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
 		radioComp.m_eStereo = CVON_EStereo.LEFT;
 		radioComp.WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
-		m_VONHud.ShowVONChange();
+		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
 	}
 	
 	//Change ear keybind
@@ -205,7 +205,7 @@ modded class SCR_VONController
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
 		radioComp.m_eStereo = CVON_EStereo.BOTH;
 		radioComp.WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
-		m_VONHud.ShowVONChange();
+		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
 	}
 	
 	//Keybind to open active radio
@@ -247,24 +247,39 @@ modded class SCR_VONController
 
 		if (radioComp.m_iCurrentChannel == 1 && input == -1)
 		{
-			radioComp.UpdateChannelClient(radioComp.m_aChannels.Count());
+			return;
 		}
 		else if (radioComp.m_iCurrentChannel == 99 && input == 1)
 		{
 			radioComp.UpdateChannelClient(1);
+			string freq = radioComp.m_aChannels.Get(0);
+			radioComp.UpdateFrequencyClient(freq);
+			m_VONHud.ShowVONChange(0);
+			return;
 		}
-		else
-		{
-			radioComp.UpdateChannelClient(radioComp.m_iCurrentChannel);
-		}
-		
-		if (radioComp.m_iCurrentChannel > channelCount)
+		else if (radioComp.m_iCurrentChannel + input > channelCount)
 		{
 			radioComp.UpdateChannelClient(1);
+			string freq = radioComp.m_aChannels.Get(0);
+			radioComp.UpdateFrequencyClient(freq);
+			m_VONHud.ShowVONChange(0);
+			return;
+		}	
+		else
+		{
+			radioComp.UpdateChannelClient(radioComp.m_iCurrentChannel + input);
 		}
+		#ifdef WORKBENCH
 		string freq = radioComp.m_aChannels.Get(radioComp.m_iCurrentChannel - 1);
+		#else
+		string freq = radioComp.m_aChannels.Get(radioComp.m_iCurrentChannel - 1 + input);
+		#endif
 		radioComp.UpdateFrequencyClient(freq);
-		m_VONHud.ShowVONChange();
+		#ifdef WORKBENCH
+		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
+		#else
+		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1 + input);
+		#endif
 	}
 	
 	//Fetches the VON HUD, delay is necessary.
@@ -478,9 +493,27 @@ modded class SCR_VONController
 		if (!m_PlayerManager)
 			m_PlayerManager = GetGame().GetPlayerManager();
 		
+		CameraBase camera = GetGame().GetCameraManager().CurrentCamera();
+		if (!camera)
+			return;
+		
 		ref array<int> playerIds = {};
 		m_PlayerManager.GetPlayers(playerIds);
 		int maxDistance = m_PlayerController.m_aVolumeValues.Get(4);
+		
+		//When a player disconnects, they are no longer in the players array, so it just leaves an empty container.
+		//This removes that container as when they reconnect they will no longer be heard.
+		foreach (int playerId: m_PlayerController.m_aLocalActiveVONEntriesIds)
+		{
+			if (playerIds.Contains(playerId))
+				continue;
+			
+			int index = m_PlayerController.m_aLocalActiveVONEntriesIds.Find(playerId);
+			m_PlayerController.m_aLocalActiveVONEntriesIds.RemoveOrdered(index);
+			m_PlayerController.m_aLocalActiveVONEntries.RemoveOrdered(index);
+			continue;
+		}
+		
 		foreach (int playerId: playerIds)
 		{
 			if (!SCR_PlayerController.GetLocalControlledEntity())
@@ -491,7 +524,21 @@ modded class SCR_VONController
 			
 			IEntity player = m_PlayerManager.GetPlayerControlledEntity(playerId);
 			if (!player)
-				continue;
+			{
+				if (m_PlayerController.m_aLocalActiveVONEntriesIds.Contains(playerId))
+				{
+					//If this VON Transmission is radio, don't do shit
+					if (m_PlayerController.m_aLocalActiveVONEntries.Get(m_PlayerController.m_aLocalActiveVONEntriesIds.Find(playerId)).m_eVonType == CVON_EVONType.RADIO)
+						continue;
+					int index = m_PlayerController.m_aLocalActiveVONEntriesIds.Find(playerId);
+					m_PlayerController.m_aLocalActiveVONEntriesIds.RemoveOrdered(index);
+					m_PlayerController.m_aLocalActiveVONEntries.RemoveOrdered(index);
+					continue;
+				}
+				else
+					continue;
+			}
+			
 			SCR_CharacterControllerComponent charCont = SCR_CharacterControllerComponent.Cast(ChimeraCharacter.Cast(player).GetCharacterController());
 			if (charCont.IsDead() || charCont.IsUnconscious())
 				if (m_PlayerController.m_aLocalActiveVONEntriesIds.Contains(playerId))
@@ -504,7 +551,7 @@ modded class SCR_VONController
 				else
 					continue;
 			
-			float distance = vector.Distance(GetGame().GetCameraManager().CurrentCamera().GetOrigin(), SCR_PlayerController.GetLocalControlledEntity().GetOrigin());
+			float distance = vector.Distance(player.GetOrigin(), camera.GetOrigin());
 			if (distance > maxDistance)
 			{
 				if (m_PlayerController.m_aLocalActiveVONEntriesIds.Contains(playerId))
@@ -547,11 +594,13 @@ modded class SCR_VONController
 			
 			container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(container.m_iPlayerId);
 			
-			float distance = vector.Distance(container.m_SoundSource.GetOrigin(), SCR_PlayerController.GetLocalControlledEntity().GetOrigin());
+			float distance = vector.Distance(container.m_SoundSource.GetOrigin(), camera.GetOrigin());
 			if (distance < maxDistance)
 				container.m_fDistanceToSender = distance;
 			else
 				container.m_fDistanceToSender = -1;
+			
+			container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(container.m_iPlayerId);
 		}
 		
 				
@@ -912,6 +961,11 @@ modded class SCR_VONController
 		}
 		return false;
 	}
+	
+	void ComputeSpectatorLR(int playerId, out float outLeft, out float outRight, out int silencedDecibels = 0)
+	{
+		//Fill in your spectator logic here
+	}
 
 	
 	//VONServerData.JSON
@@ -947,10 +1001,13 @@ modded class SCR_VONController
 			VONServerData.StartObject("ServerData");
 			VONServerData.SetMaxDecimalPlaces(1);
 			VONServerData.WriteValue("InGame", true);
+			VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(SCR_PlayerController.GetLocalPlayerId()));
 			VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
 			VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
 			VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
 			VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
+			VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
+			VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
 			VONServerData.EndObject();
 			VONServerData.SaveToFile("$profile:/VONServerData.json");
 		}
@@ -960,12 +1017,14 @@ modded class SCR_VONController
 			string ChannelPassword;
 			int TSClientId = 0;
 			bool InGame;
+			string gameName;
 			VONLoad.StartObject("ServerData");
 			VONLoad.ReadValue("InGame", InGame);
 			VONLoad.ReadValue("VONChannelName", ChannelName);
 			VONLoad.ReadValue("VONChannelPassword", ChannelPassword);
 			VONLoad.ReadValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
 			VONLoad.ReadValue("TSClientID", TSClientId);
+			VONLoad.ReadValue("InGameName", gameName);
 			if (m_PlayerController.GetTeamspeakClientId() != TSClientId && m_fWriteTeamspeakClientIdCooldown <= 0)
 			{
 				m_fWriteTeamspeakClientIdCooldown = 1;
@@ -973,21 +1032,24 @@ modded class SCR_VONController
 			}
 				
 			VONLoad.EndObject();
-			if (ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
+			if (gameName == "" || ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
 			{
 				SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
 				VONServerData.StartObject("ServerData");
 				VONServerData.SetMaxDecimalPlaces(1);
 				VONServerData.WriteValue("InGame", true);
+				VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(SCR_PlayerController.GetLocalPlayerId()));
 				VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
 				VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
 				VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
 				VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
+				VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
+				VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
 				VONServerData.EndObject();
 				VONServerData.SaveToFile("$profile:/VONServerData.json");
 			}
 		}
-		#ifdef WORKBENCH
+		#ifdef ENABLE_DIAG
 		#else
 		//Hijack this whole process to load the initial warning menu
 		if (m_VONGameModeComponent.m_bTeamspeakChecks)
@@ -1004,6 +1066,8 @@ modded class SCR_VONController
 		SCR_JsonSaveContext VONSave = new SCR_JsonSaveContext();
 		VONSave.WriteValue("IsTransmitting", m_bIsBroadcasting);
 		IEntity localEntity = GetGame().GetCameraManager().CurrentCamera();
+		if (!localEntity)
+			return;
 		foreach (CVON_VONContainer container: m_PlayerController.m_aLocalActiveVONEntries)
 		{
 			IEntity soundSource;
@@ -1017,6 +1081,10 @@ modded class SCR_VONController
 				left = 0;
 				right = 0;
 				frequency = "";
+			}
+			else if (container.m_bIsSpectator)
+			{
+				ComputeSpectatorLR(container.m_iPlayerId, left, right)
 			}
 			else if (Replication.FindItem(container.m_SenderRplId) && !container.m_SoundSource && container.m_fDistanceToSender != -1)
 			{
@@ -1047,7 +1115,6 @@ modded class SCR_VONController
 				else
 					container.m_fConnectionQuality = GetSignalStrength(vector.Distance(localEntity.GetOrigin(), container.m_vSenderLocation), container.m_iMaxDistance);
 			}
-				
 				
 			VONSave.StartObject(m_PlayerController.GetPlayersTeamspeakClientId(container.m_iPlayerId).ToString());
 			VONSave.SetMaxDecimalPlaces(3);
@@ -1082,10 +1149,13 @@ modded class SCR_VONController
 		SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
 		VONServerData.StartObject("ServerData");
 		VONServerData.WriteValue("InGame", false);
+		VONServerData.WriteValue("InGameName", "");
 		VONServerData.WriteValue("TSClientID", 0);
 		VONServerData.WriteValue("TSPluginVersion", 0);
 		VONServerData.WriteValue("VONChannelName", "");
 		VONServerData.WriteValue("VONChannelPassword", "");
+		VONServerData.WriteValue("TSServerIp", "");
+		VONServerData.WriteValue("TSServerPassword", "");
 		VONServerData.EndObject();
 		VONServerData.SaveToFile("$profile:/VONServerData.json");
 	}

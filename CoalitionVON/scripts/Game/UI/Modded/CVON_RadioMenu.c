@@ -343,6 +343,7 @@ class CVON_RadioMenu: MenuBase
 		
 		m_RadioComponent.m_eStereo += input;
 		m_RadioComponent.WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
+		m_PlayerController.UpdateSettings();
 		LoadStereoMenu();
 	}
 	
@@ -367,6 +368,7 @@ class CVON_RadioMenu: MenuBase
 		
 		m_RadioComponent.m_iVolume += input;
 		m_RadioComponent.WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
+		m_PlayerController.UpdateSettings();
 		LoadVolumeMenu();
 	}
 	

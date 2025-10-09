@@ -2,6 +2,7 @@ MetaFileClass {
  Name "{EA665B20D3F98B1D}assets/R168/R168.xob"
  Configurations {
   FBXResourceClass PC {
+   Rotate 0 180 0
    MaterialAssigns {
     MaterialAssignClass "{663ED4C22E30A0C7}" {
      SourceMaterial "RadiostationR168"

@@ -70,23 +70,18 @@ modded class SCR_PlayerController
 		super.OnControlledEntityChanged(from, to);
 		if (!CVON_VONGameModeComponent.GetInstance())
 			return;
+		UpdateSettings();
+		
 		GetGame().GetCallqueue().CallLater(InitializeRadios, 500, false, to);
 	}
 	
-	override void OnDestroyed(notnull Instigator killer)
+	void UpdateSettings()
 	{
-		super.OnDestroyed(killer);
-		if (!CVON_VONGameModeComponent.GetInstance())
-			return;
-		#ifdef WORKBENCH
-		#else
-		if (!System.IsConsoleApp())
-			return;
-		#endif		
 		m_aRadioSettings.Clear();
-		
 		foreach (IEntity radio: m_aRadios)
 		{
+			if (!radio)
+				continue;
 			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 			SCR_FactionManager factionMan = SCR_FactionManager.Cast(GetGame().GetFactionManager());
 			if (radioComp.m_sFactionKey != "" && radioComp.m_sFactionKey != factionMan.GetPlayerFaction(GetPlayerId()).GetFactionKey())
@@ -104,7 +99,15 @@ modded class SCR_PlayerController
 	//Loading settings only works if the radios where pe configured with the CVON_FreqConfig.
 	void InitializeRadios(IEntity to)
 	{
+		if (GetGame().GetPlayerController())
+		{
+			SCR_VONController vonController = SCR_VONController.Cast(GetGame().GetPlayerController().FindComponent(SCR_VONController));
+			vonController.m_CharacterController = SCR_CharacterControllerComponent.Cast(to.FindComponent(SCR_CharacterControllerComponent));
+		}
 		m_aRadios.Clear();
+		//Reforger Lobby bs
+		m_aLocalActiveVONEntries.Clear();
+		m_aLocalActiveVONEntriesIds.Clear();
 		array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(to);
 		if (!radios)
 			return;
@@ -148,11 +151,23 @@ modded class SCR_PlayerController
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
 		if (GetGame().GetPlayerController())
 		{
-			SCR_VONController vonController = SCR_VONController.Cast(GetGame().GetPlayerController().FindComponent(SCR_VONController));
-			vonController.m_CharacterController = SCR_CharacterControllerComponent.Cast(to.FindComponent(SCR_CharacterControllerComponent));
 			radioComp.WriteJSON(to);
+			if (m_aRadioSettings.Count() > 0)
+			{
+				foreach (IEntity radio: m_aRadios)
+				{
+					CVON_RadioComponent radioCompSetting = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					int index = m_aRadios.Find(radio);
+					if (m_aRadioSettings.Count() <= index)
+						break;
+					CVON_RadioSettingObject radioSetting = m_aRadioSettings.Get(index);
+					
+					radioCompSetting.m_iVolume = radioSetting.m_iVolume;
+					radioCompSetting.m_eStereo = radioSetting.m_Stereo;
+				}
+				return;
+			}
 		}
-			
 	}
 	
 	//mmmmgetter
@@ -409,10 +424,20 @@ modded class SCR_PlayerController
 	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
 	void RpcAsk_RotateActiveChannelServer(int playerId)
 	{
+		#ifdef WORKBENCH
+		#else
 		SCR_PlayerController playerController = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
-		IEntity radioEntity = playerController.m_aRadios.Get(playerController.m_aRadios.Count() - 1);
-		playerController.m_aRadios.RemoveOrdered(playerController.m_aRadios.Count() - 1);
-		playerController.m_aRadios.InsertAt(radioEntity, 0);
+		int count = playerController.m_aRadios.Count();
+		if (count < 2) return;
+	
+		IEntity last = playerController.m_aRadios[count - 1];
+	
+	    for (int i = count - 1; i > 0; i--)
+	    {
+	        playerController.m_aRadios[i] = playerController.m_aRadios[i - 1];
+	    }
+	    playerController.m_aRadios[0] = last;
+		#endif
 	}
 	
 	void GrabHandMicServer(int playerId, RplId radioId)

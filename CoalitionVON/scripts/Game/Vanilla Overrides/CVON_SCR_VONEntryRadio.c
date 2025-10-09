@@ -68,6 +68,6 @@ modded class SCR_VONEntryRadio
 		if (!radioComp)
 			return;
 
-		entryComp.UpdateCVONRadioWidget(radioComp, false);
+		entryComp.UpdateCVONRadioWidget(radioComp, false, radioComp.m_iCurrentChannel - 1);
 	}
 }

@@ -40,7 +40,6 @@ class CVON_HUD: SCR_InfoDisplay {
 		GetGame().GetInputManager().AddActionListener("VONMediumRange", EActionTrigger.DOWN, ShowVON);
 		GetGame().GetInputManager().AddActionListener("VONRotateActive", EActionTrigger.DOWN, ShowVONActive);
 		GetGame().GetInputManager().AddActionListener("VONRotateActive", EActionTrigger.UP, HideVON);
-		GetGame().GetInputManager().AddActionListener("VONChannelUp", EActionTrigger.DOWN, ShowVONChange);
 		GetGame().GetInputManager().AddActionListener("VONChannelUp", EActionTrigger.UP, HideVON);
 		GetGame().GetInputManager().AddActionListener("VONChannelDown", EActionTrigger.UP, HideVON);
 		GetGame().GetInputManager().AddActionListener("VONRadioEarRight", EActionTrigger.UP, HideVON);
@@ -64,7 +63,6 @@ class CVON_HUD: SCR_InfoDisplay {
 		GetGame().GetInputManager().RemoveActionListener("VONMediumRange", EActionTrigger.UP, HideVON);
 		GetGame().GetInputManager().RemoveActionListener("VONRotateActive", EActionTrigger.DOWN, ShowVONActive);
 		GetGame().GetInputManager().RemoveActionListener("VONRotateActive", EActionTrigger.UP, HideVON);
-		GetGame().GetInputManager().RemoveActionListener("VONChannelUp", EActionTrigger.DOWN, ShowVONChange);
 		GetGame().GetInputManager().RemoveActionListener("VONChannelUp", EActionTrigger.UP, HideVON);
 		GetGame().GetInputManager().RemoveActionListener("VONChannelDown", EActionTrigger.UP, HideVON);
 		GetGame().GetInputManager().RemoveActionListener("VONRadioEarRight", EActionTrigger.UP, HideVON);
@@ -154,7 +152,7 @@ class CVON_HUD: SCR_InfoDisplay {
 		AnimateWidget.Opacity(mic, 0, 1/0.3);
 	}
 	
-	void ShowVONChange()
+	void ShowVONChange(int input)
 	{
 		#ifdef WORKBENCH
 		#else
@@ -174,7 +172,7 @@ class CVON_HUD: SCR_InfoDisplay {
 		if (!radioComp)
 			return;
 		
-		UpdateCVONRadioWidget(radioComp, true, m_wRoot);
+		UpdateCVONRadioWidget(radioComp, true, m_wRoot, input);
 	}
 	
 	void ShowVONActive()
@@ -197,7 +195,7 @@ class CVON_HUD: SCR_InfoDisplay {
 		if (!radioComp)
 			return;
 		
-		UpdateCVONRadioWidget(radioComp, true, m_wRoot);
+		UpdateCVONRadioWidget(radioComp, true, m_wRoot, radioComp.m_iCurrentChannel - 1);
 	}
 	
 	void ShowVON()
@@ -229,7 +227,7 @@ class CVON_HUD: SCR_InfoDisplay {
 		if (!radioComp)
 			return;
 		
-		UpdateCVONRadioWidget(radioComp, true, m_wRoot);
+		UpdateCVONRadioWidget(radioComp, true, m_wRoot, radioComp.m_iCurrentChannel - 1);
 	}
 	
 	void HideVON()
@@ -239,7 +237,7 @@ class CVON_HUD: SCR_InfoDisplay {
 		AnimateWidget.Opacity(vonWidget, 0, 1/0.3);
 	}
 	
-	static void UpdateCVONRadioWidget(CVON_RadioComponent radioComp, bool showWindow, Widget root)
+	static void UpdateCVONRadioWidget(CVON_RadioComponent radioComp, bool showWindow, Widget root, int input)
 	{
 		ImageWidget left = ImageWidget.Cast(root.FindAnyWidget("Left"));
 		ImageWidget right = ImageWidget.Cast(root.FindAnyWidget("Right"));
@@ -255,9 +253,9 @@ class CVON_HUD: SCR_InfoDisplay {
 		//Radio Name text
 		radio.SetText(radioComp.m_sRadioName);
 		//Freq text
-		frequency.SetText(radioComp.m_sFrequency);
+		frequency.SetText(radioComp.m_aChannels.Get(input));
 		//Channel text
-		channel.SetText(string.Format("CH-%1", radioComp.m_iCurrentChannel));
+		channel.SetText(string.Format("CH-%1", input + 1));
 		
 		
 		right.LoadImageTexture(0, CVON_HUD.m_sArrowOn);
