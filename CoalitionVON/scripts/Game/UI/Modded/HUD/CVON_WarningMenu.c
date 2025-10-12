@@ -27,13 +27,14 @@ class CVON_WarningMenu: ChimeraMenuBase
 	
 	override void OnMenuUpdate(float tDelta)
 	{
+		super.OnMenuUpdate(tDelta);
 		if (m_PlayerController.GetTeamspeakClientId() == 0)
 		{
 			m_wExplanation.SetText("Teamspeak Plugin Not Detected!");
 		}
 		else if (m_PlayerController.m_sTeamspeakPluginVersion != m_VONGamemode.m_sTeamspeakPluginVersion)
 		{
-			m_wExplanation.SetText("Teamspeak Plugin Version Mismatch!");
+			m_wExplanation.SetText(string.Format("Teamspeak Plugin Version Mismatch! Your Version: %1 || Latest Version: %2", m_PlayerController.m_sTeamspeakPluginVersion, m_VONGamemode.m_sTeamspeakPluginVersion));
 		}
 		if (m_PlayerController.GetTeamspeakClientId() != 0 && m_PlayerController.m_sTeamspeakPluginVersion == m_VONGamemode.m_sTeamspeakPluginVersion)
 		{

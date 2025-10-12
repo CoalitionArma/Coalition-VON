@@ -406,6 +406,8 @@ class CVON_RadioComponent: ScriptComponent
 	{
 		if (!GetGame().GetPlayerController())
 			return;
+		if (entity != SCR_PlayerController.GetLocalControlledEntity())
+			return;
 		SCR_JsonSaveContext VONSave = new SCR_JsonSaveContext();
 		ref array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(entity);
 		if (!radios)
@@ -417,12 +419,12 @@ class CVON_RadioComponent: ScriptComponent
 			if (!m_bPower)
 				continue;
 			VONSave.StartObject(radio.ToString());
-			VONSave.WriteValue("Freq", m_sFrequency);
-			VONSave.WriteValue("TimeDeviation", m_iTimeDeviation);
-			VONSave.WriteValue("Volume", m_iVolume);
-			VONSave.WriteValue("Stereo", m_eStereo);
+			VONSave.WriteValue("Freq", radioComp.m_sFrequency);
+			VONSave.WriteValue("TimeDeviation", radioComp.m_iTimeDeviation);
+			VONSave.WriteValue("Volume", radioComp.m_iVolume);
+			VONSave.WriteValue("Stereo", radioComp.m_eStereo);
 			if (CVON_VONGameModeComponent.GetInstance().m_bUseFactionEcncryption)
-				VONSave.WriteValue("FactionKey", m_sFactionKey);
+				VONSave.WriteValue("FactionKey", radioComp.m_sFactionKey);
 			else
 				VONSave.WriteValue("FactionKey", "");
 			VONSave.EndObject();

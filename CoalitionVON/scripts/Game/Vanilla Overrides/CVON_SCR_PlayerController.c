@@ -21,9 +21,6 @@ modded class SCR_PlayerController
 	//How we link what level the enum below should be at.
 	static ref array<int> m_aVolumeValues = {3, 8, 25, 40, 60};
 	
-	//Used so we don't spam the player with initial warnings if their TS crashes, just when they first connect.
-	bool m_bHasBeenGivenInitialWarning = false;
-	
 	//Teamspeak has been detected, also used to not have the annoying game locking popup everytime TS wants to crash
 	bool m_bHasConnectedToTeamspeakForFirstTime = false;
 	

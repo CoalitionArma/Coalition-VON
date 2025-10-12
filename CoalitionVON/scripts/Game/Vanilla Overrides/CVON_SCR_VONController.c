@@ -1054,13 +1054,14 @@ modded class SCR_VONController
 		//Hijack this whole process to load the initial warning menu
 		if (m_VONGameModeComponent.m_bTeamspeakChecks)
 		{	
-			if (m_PlayerController.GetTeamspeakClientId() == 0 && !m_PlayerController.m_bHasBeenGivenInitialWarning && SCR_PlayerController.GetLocalControlledEntity())
+			if (m_PlayerController.GetTeamspeakClientId() == 0 && !m_PlayerController.m_bHasConnectedToTeamspeakForFirstTime)
 			{
-				m_PlayerController.m_bHasBeenGivenInitialWarning = true;
-				GetGame().GetMenuManager().OpenMenu(ChimeraMenuPreset.CVON_WarningMenu);
+				if (!GetGame().GetMenuManager().GetTopMenu())
+					GetGame().GetMenuManager().OpenMenu(ChimeraMenuPreset.CVON_WarningMenu);
+				else if (!GetGame().GetMenuManager().GetTopMenu().IsInherited(CVON_WarningMenu))
+					GetGame().GetMenuManager().OpenMenu(ChimeraMenuPreset.CVON_WarningMenu);
 			}
-			else if (!m_PlayerController.m_bHasConnectedToTeamspeakForFirstTime && m_PlayerController.GetTeamspeakClientId() != 0)
-				m_PlayerController.m_bHasBeenGivenInitialWarning = true;
+				
 		}
 		#endif
 		SCR_JsonSaveContext VONSave = new SCR_JsonSaveContext();
