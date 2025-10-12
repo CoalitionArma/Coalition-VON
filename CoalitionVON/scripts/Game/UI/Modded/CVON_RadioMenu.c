@@ -71,6 +71,10 @@ class CVON_RadioMenu: MenuBase
 	//More pointers
 	InputManager m_InputManager;
 	
+	Widget m_wHelpFrame;
+	SCR_ButtonComponent m_wHelpButton;
+	bool m_bHelpEnabled = false;
+	
 	//==========================================================================================================================================================================
 	override void OnMenuOpen()
 	{
@@ -115,6 +119,14 @@ class CVON_RadioMenu: MenuBase
 		
 		m_PlayerController = SCR_PlayerController.Cast(GetGame().GetPlayerController());
 		m_InputManager = GetGame().GetInputManager();
+		m_wHelpButton = SCR_ButtonComponent.Cast(m_wRoot.FindAnyWidget("HelpButton").FindHandler(SCR_ButtonComponent));
+		m_wHelpButton.m_OnClicked.Insert(ToggleHelp);
+		m_wHelpFrame = m_wRoot.FindAnyWidget("HelpFrame");
+	}
+	
+	void ToggleHelp()
+	{
+		m_bHelpEnabled = !m_bHelpEnabled;
 	}
 	
 	//==========================================================================================================================================================================
@@ -137,6 +149,10 @@ class CVON_RadioMenu: MenuBase
 	//==========================================================================================================================================================================
 	override void OnMenuUpdate(float tDelta)
 	{
+		if (m_bHelpEnabled)
+			m_wHelpFrame.SetVisible(true);
+		else
+			m_wHelpFrame.SetVisible(false);
 		//Initialize the radios channels
 		if (!m_RadioComponent)
 		{

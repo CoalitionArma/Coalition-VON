@@ -457,5 +457,203 @@ FrameWidgetClass {
     }
    }
   }
+  PanelWidgetClass "{6698B878B08D8597}" {
+   Name "Panel0"
+   Slot FrameWidgetSlot "{6694ADF1AE3F49D1}" {
+    Anchor 0.943 0.314 0.943 0.314
+    PositionX -672.087
+    OffsetLeft -672.087
+    PositionY -284.05
+    OffsetTop -284.05
+    SizeX 134.739
+    OffsetRight 537.348
+    SizeY 50
+    OffsetBottom 234.05
+   }
+   Color 0.0908 0.0908 0.0908 1
+  }
+  FrameWidgetClass "{6698B878B08D84A5}" {
+   Name "HelpFrame"
+   Slot FrameWidgetSlot "{6698B87B338CE41E}" {
+    Anchor 0.5 0.5 0.5 0.5
+    PositionX -960
+    OffsetLeft -960
+    PositionY -540
+    OffsetTop -540
+    SizeX 1920
+    OffsetRight -960
+    SizeY 1080
+    OffsetBottom -540
+   }
+   "Is Visible" 0
+   {
+    ImageWidgetClass "{6698B878B08D84A9}" {
+     Name "HelpImage"
+     Slot FrameWidgetSlot "{662A447270D1FD33}" {
+      Anchor 0 0 1 1
+      PositionX 0
+      OffsetLeft 0
+      PositionY 0
+      OffsetTop 0
+      SizeX 0
+      OffsetRight 0
+      SizeY 0
+      OffsetBottom 0
+     }
+     Texture "{50D015F9B4F943B0}UI/layouts/Radios/R187/data/R187Help.edds"
+     Size 2560 1440
+    }
+    TextWidgetClass "{6698B878B08D84A4}" {
+     Name "Text0"
+     Slot FrameWidgetSlot "{6698B87B0A9C6DFD}" {
+      Anchor 0 0 1 1
+      PositionX 1133.07
+      OffsetLeft 1133.07
+      PositionY 440.965
+      OffsetTop 440.965
+      SizeX -1820
+      OffsetRight 686.936
+      SizeY -1050
+      OffsetBottom 609.035
+     }
+     Text "Menu Up"
+     "Horizontal Alignment" Right
+    }
+    TextWidgetClass "{6698B878B08D84A8}" {
+     Name "Text1"
+     Slot FrameWidgetSlot "{6698B87B0A9C6DFD}" {
+      Anchor 0 0 1 1
+      PositionX 655.679
+      OffsetLeft 655.679
+      PositionY 639.813
+      OffsetTop 639.813
+      SizeX -1792.82
+      OffsetRight 1137.14
+      SizeY -1050
+      OffsetBottom 410.188
+     }
+     Text "Menu Down"
+     "Horizontal Alignment" Right
+    }
+    TextWidgetClass "{6698B878B08D03AD}" {
+     Name "Text2"
+     Slot FrameWidgetSlot "{6698B87B0A9C6DFD}" {
+      Anchor 0 0 1 1
+      PositionX 629.768
+      OffsetLeft 629.768
+      PositionY 524.235
+      OffsetTop 524.235
+      SizeX -1792.82
+      OffsetRight 1163.05
+      SizeY -1050
+      OffsetBottom 525.767
+     }
+     Text "Menu Left"
+     "Horizontal Alignment" Right
+    }
+    TextWidgetClass "{6698B878B08D03AB}" {
+     Name "Text3"
+     Slot FrameWidgetSlot "{6698B87B0A9C6DFD}" {
+      Anchor 0 0 1 1
+      PositionX 1073.67
+      OffsetLeft 1073.67
+      PositionY 603.41
+      OffsetTop 603.41
+      SizeX -1792.82
+      OffsetRight 719.152
+      SizeY -1050
+      OffsetBottom 446.592
+     }
+     Text "Clear"
+     "Horizontal Alignment" Right
+    }
+    TextWidgetClass "{6698B878B08D03A8}" {
+     Name "Text4"
+     Slot FrameWidgetSlot "{6698B87B0A9C6DFD}" {
+      Anchor 0 0 1 1
+      PositionX 626.189
+      OffsetLeft 626.189
+      PositionY 580.813
+      OffsetTop 580.813
+      SizeX -1792.82
+      OffsetRight 1166.63
+      SizeY -1050
+      OffsetBottom 469.19
+     }
+     Text "Enter"
+     "Horizontal Alignment" Right
+    }
+    TextWidgetClass "{6698B878B08D6E4F}" {
+     Name "Text5"
+     Slot FrameWidgetSlot "{6698B87B0A9C6DFD}" {
+      Anchor 0 0 1 1
+      PositionX 1217.3
+      OffsetLeft 1217.3
+      PositionY 547.29
+      OffsetTop 547.29
+      SizeX -1792.83
+      OffsetRight 575.531
+      SizeY -1050
+      OffsetBottom 502.712
+     }
+     Text "Menu Right"
+     "Horizontal Alignment" Right
+    }
+    TextWidgetClass "{6698B878B08D6E4E}" {
+     Name "Text6"
+     Slot FrameWidgetSlot "{6698B87B0A9C6DFD}" {
+      Anchor 0 0 1 1
+      PositionX 1206.6
+      OffsetLeft 1206.6
+      PositionY 766.579
+      OffsetTop 766.579
+      SizeX -1792.81
+      OffsetRight 586.218
+      SizeY -1050
+      OffsetBottom 283.423
+     }
+     Text "Power"
+     "Horizontal Alignment" Right
+    }
+   }
+  }
+  ButtonWidgetClass "{6698B878B08D6994}" {
+   Name "HelpButton"
+   Slot FrameWidgetSlot "{6694ADF4EF5BF54D}" {
+    Anchor 0.943 0.312 0.943 0.312
+    PositionX -672.388
+    OffsetLeft -672.388
+    PositionY -282.062
+    OffsetTop -282.062
+    SizeX 134.739
+    OffsetRight 537.649
+    SizeY 50
+    OffsetBottom 232.062
+   }
+   Color 0.0343 0.0343 0.0343 0
+   components {
+    SCR_ButtonComponent "{6694ADF439D3B23B}" {
+    }
+   }
+   {
+    TextWidgetClass "{6698B878B08D6997}" {
+     Name "Text0"
+     Slot ButtonWidgetSlot "{6694ADF6D9BF4130}" {
+      HorizontalAlign 3
+      VerticalAlign 3
+     }
+     Text "Help"
+     "Font Size" 34
+     "Horizontal Alignment" Center
+     "Vertical Alignment" Center
+     FontProperties FontProperties "{6694ADF619F03E7D}" {
+      Font "{EABA4FE9D014CCEF}UI/Fonts/RobotoCondensed/RobotoCondensed_Bold.fnt"
+      ShadowSize 16
+      ShadowOffset 0 0
+      ShadowOpacity 0.7
+     }
+    }
+   }
+  }
  }
 }
