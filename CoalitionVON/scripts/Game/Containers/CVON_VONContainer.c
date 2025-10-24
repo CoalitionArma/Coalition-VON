@@ -57,26 +57,26 @@ class CVON_VONContainer
 	
 	static bool Extract(CVON_VONContainer instance, ScriptCtx ctx, SSnapSerializerBase snapshot)
 	{	
-		snapshot.SerializeInt(instance.m_eVonType);
-		snapshot.SerializeInt(instance.m_SenderRplId);
+		snapshot.SerializeBytes(instance.m_eVonType, 4);
+		snapshot.SerializeBytes(instance.m_SenderRplId, 4);
 		snapshot.SerializeString(instance.m_sFrequency);
-		snapshot.SerializeInt(instance.m_iVolume);
-		snapshot.SerializeInt(instance.m_iClientId);
+		snapshot.SerializeBytes(instance.m_iVolume, 4);
+		snapshot.SerializeBytes(instance.m_iClientId, 4);
 		snapshot.SerializeString(instance.m_sFactionKey);
-		snapshot.SerializeInt(instance.m_iPlayerId);
+		snapshot.SerializeBytes(instance.m_iPlayerId, 4);
 		
 		return true;
 	}
 	
 	static bool Inject(SSnapSerializerBase snapshot, ScriptCtx ctx, CVON_VONContainer instance)
 	{
-		snapshot.SerializeInt(instance.m_eVonType);
-		snapshot.SerializeInt(instance.m_SenderRplId);
+		snapshot.SerializeBytes(instance.m_eVonType, 4);
+		snapshot.SerializeBytes(instance.m_SenderRplId, 4);
 		snapshot.SerializeString(instance.m_sFrequency);
-		snapshot.SerializeInt(instance.m_iVolume);
-		snapshot.SerializeInt(instance.m_iClientId);
+		snapshot.SerializeBytes(instance.m_iVolume, 4);
+		snapshot.SerializeBytes(instance.m_iClientId, 4);
 		snapshot.SerializeString(instance.m_sFactionKey);
-		snapshot.SerializeInt(instance.m_iPlayerId);
+		snapshot.SerializeBytes(instance.m_iPlayerId, 4);
 		
 		return true;
 	}
@@ -118,12 +118,12 @@ class CVON_VONContainer
 	
 	static bool PropCompare(CVON_VONContainer instance, SSnapSerializerBase snapshot, ScriptCtx ctx)
 	{
-		return snapshot.CompareInt(instance.m_eVonType)
-		&& snapshot.CompareInt(instance.m_SenderRplId)
+		return snapshot.Compare(instance.m_eVonType, 4)
+		&& snapshot.Compare(instance.m_SenderRplId, 4)
 		&& snapshot.CompareString(instance.m_sFrequency)
-		&& snapshot.CompareInt(instance.m_iVolume)
-		&& snapshot.CompareInt(instance.m_iClientId)
+		&& snapshot.Compare(instance.m_iVolume, 4)
+		&& snapshot.Compare(instance.m_iClientId, 4)
 		&& snapshot.CompareString(instance.m_sFactionKey)
-		&& snapshot.CompareInt(instance.m_iPlayerId);
+		&& snapshot.Compare(instance.m_iPlayerId, 4);
 	}
 }
