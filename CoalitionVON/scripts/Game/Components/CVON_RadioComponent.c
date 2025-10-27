@@ -209,6 +209,10 @@ class CVON_RadioComponent: ScriptComponent
 	override void EOnFrame(IEntity owner, float timeSlice)
 	{
 		super.EOnFrame(owner, timeSlice);
+		#ifdef WORKBENCH
+		if (m_sFactionKey == "")
+			InitializeRadios();
+		#else
 		if (System.IsConsoleApp())
 		{
 			//Redundancy, also used in base CVON without the CRF as they don't have the GS.
@@ -216,6 +220,8 @@ class CVON_RadioComponent: ScriptComponent
 				InitializeRadios();
 			return;
 		}
+		#endif
+		
 			
 		
 		if (m_iTempChannel != m_iCurrentChannel || m_sTempFrequency != m_sFrequency || m_iTempTimeDeviation != m_iTimeDeviation || m_sTempFactionKey != m_sFactionKey)
@@ -232,6 +238,7 @@ class CVON_RadioComponent: ScriptComponent
 	{
 		//Have this ifdef here cause in the workshop its a listen server, I explain the code in the non workshop version.
 		#ifdef WORKBENCH
+		Print("Initialize Radio");
 		if (m_sFactionKey != "")
 			return;
 	

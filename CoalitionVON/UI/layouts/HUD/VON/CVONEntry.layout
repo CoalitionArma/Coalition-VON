@@ -53,7 +53,6 @@ FrameWidgetClass {
    }
    {
     VerticalLayoutWidgetClass "{66466B0B87A96F24}" {
-     Prefab "{5CC6924FF67CE111}"
      Name "VerticalLayout0"
      Slot AlignableSlot "{5CEAF8054DDAF15A}" {
      }
@@ -135,7 +134,6 @@ FrameWidgetClass {
                  }
                  {
                   TextWidgetClass "{66466B0B87AAAFF7}" {
-                   Prefab "{5CCC91E0C44B6341}"
                    Name "Channel"
                    Slot LayoutSlot "{5D0AEE0CE85C65B2}" {
                     HorizontalAlign 0
@@ -149,6 +147,8 @@ FrameWidgetClass {
                     ShadowSize 2
                    }
                   }
+                 }
+                 {
                   TextWidgetClass "{66466B0B87AA91F5}" {
                    Name "Frequency"
                    Slot LayoutSlot "{5D0AEE0CE85C65B2}" {
@@ -259,21 +259,6 @@ FrameWidgetClass {
          }
         }
        }
-      }
-      HorizontalLayoutWidgetClass "{66466B0B87AB6C00}" {
-       Prefab "{5D0A86953EF7769B}"
-       Name "HorizontalLayout0"
-       "Is Visible" 0
-      }
-      TextWidgetClass "{66466B0B87AB6C01}" {
-       Prefab "{5CCC91E0C44B6341}"
-       Name "Text0"
-       "Is Visible" 0
-      }
-      TextWidgetClass "{66466B0B87AB5A73}" {
-       Prefab "{5D0A869549EE82A6}"
-       Name "Text1"
-       "Is Visible" 0
       }
      }
     }
