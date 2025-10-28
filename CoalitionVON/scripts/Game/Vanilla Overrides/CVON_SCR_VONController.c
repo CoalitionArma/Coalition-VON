@@ -499,7 +499,6 @@ modded class SCR_VONController
 		
 		ref array<int> playerIds = {};
 		m_PlayerManager.GetPlayers(playerIds);
-		int maxDistance = m_PlayerController.m_aVolumeValues.Get(4);
 		
 		//When a player disconnects, they are no longer in the players array, so it just leaves an empty container.
 		//This removes that container as when they reconnect they will no longer be heard.
@@ -551,6 +550,7 @@ modded class SCR_VONController
 				else
 					continue;
 			
+			int maxDistance = m_VONGameModeComponent.GetPlayerVolume(playerId);
 			float distance = vector.Distance(player.GetOrigin(), camera.GetOrigin());
 			if (distance > maxDistance)
 			{
@@ -592,6 +592,7 @@ modded class SCR_VONController
 			if (!container.m_SoundSource)
 				continue;
 			
+			int maxDistance = m_VONGameModeComponent.GetPlayerVolume(container.m_iPlayerId);
 			container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(container.m_iPlayerId);
 			
 			float distance = vector.Distance(container.m_SoundSource.GetOrigin(), camera.GetOrigin());
@@ -718,6 +719,13 @@ modded class SCR_VONController
 	    // ---- Direction ----
 	    vector toSrc = sourcePos - Lpos;
 	    float  dist  = toSrc.Length();
+		if (dist > volume_m)
+		{
+			outLeft = 0;
+			outRight = 0;
+			silencedDecibels = 0;
+			return;
+		}
 	    if (dist < 0.0001) dist = 0.0001;
 	    vector dir   = toSrc / dist;
 	
