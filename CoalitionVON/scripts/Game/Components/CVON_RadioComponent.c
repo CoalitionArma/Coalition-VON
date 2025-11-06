@@ -419,6 +419,7 @@ class CVON_RadioComponent: ScriptComponent
 		ref array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(entity);
 		if (!radios)
 			return;
+		string radioFreqs = "";
 		foreach (RplId radio: radios)
 		{
 			IEntity radioEntity = RplComponent.Cast(Replication.FindItem(radio)).GetEntity();
@@ -435,7 +436,9 @@ class CVON_RadioComponent: ScriptComponent
 			else
 				VONSave.WriteValue("FactionKey", "");
 			VONSave.EndObject();
+			radioFreqs += radioComp.m_sFrequency + "|";
 		}
+		SCR_PlayerController.Cast(GetGame().GetPlayerController()).UpdateFreqArray(radioFreqs);
 		VONSave.SaveToFile("$profile:/RadioData.json");
 	}
 	

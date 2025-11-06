@@ -481,4 +481,19 @@ modded class SCR_PlayerController
 		radioComp.m_eStereo = stereo;
 		radioComp.WriteJSON(GetLocalControlledEntity());
 	}
+	
+	void UpdateFreqArray(string radioFreqs)
+	{
+		Rpc(RpcDo_UpdateFreqArray, SCR_PlayerController.GetLocalPlayerId(), radioFreqs);
+	}
+	
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	void RpcDo_UpdateFreqArray(int playerId, string radioFreqs)
+	{
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (!gamemode.m_PlayerFreqArray.Contains(playerId))
+			gamemode.m_PlayerFreqArray.Insert(playerId, radioFreqs);
+		else
+			gamemode.m_PlayerFreqArray.Set(playerId, radioFreqs);
+	}
 }

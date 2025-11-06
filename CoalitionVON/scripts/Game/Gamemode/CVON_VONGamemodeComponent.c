@@ -26,6 +26,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	[RplProp()] ref array<int> m_aPlayerClientIds = {};
 	[RplProp()] ref array<int> m_aPlayerIds = {};
 	string m_sTeamspeakPluginVersion = "1.9.9";
+	ref map <int, string> m_PlayerFreqArray = new map <int, string>;
 	
 	//If disabled everyone shares the same frequencies.
 	[Attribute("1")] bool m_bUseFactionEcncryption;
@@ -196,10 +197,31 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		
 		foreach (int playerId: playerIds)
 		{
+			if (!m_PlayerFreqArray.Contains(playerId))
+				continue;
+			
+			bool matchedFreq = false;
+			foreach (string freq: GetFreqsFromFreqMap(playerId))
+			{
+				if (freq == VONContainer.m_sFrequency)
+					matchedFreq = true;
+			}
+			
+			if (!matchedFreq)
+				continue;
+			
 			if (!GetGame().GetPlayerManager().GetPlayerController(playerId))
 				continue;
 			SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).AddLocalVONBroadcast(VONContainer, playerIdToAdd, GetGame().GetPlayerManager().GetPlayerControlledEntity(playerIdToAdd).GetOrigin(), maxDist);
 		}
+	}
+	
+	array<string> GetFreqsFromFreqMap(int playerId)
+	{
+		string freqs = m_PlayerFreqArray.Get(playerId);
+		array<string> freq = {};
+		freqs.Split("|", freq, false);
+		return freq;
 	}
 	
 	
