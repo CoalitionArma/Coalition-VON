@@ -934,6 +934,28 @@ modded class SCR_VONController
 		bottom = origin[1] - distanceDown;
 	}
 	
+	bool CheckIfInSameVehicle(IEntity senderEntity, IEntity player)
+	{
+		if (!player.GetRootParent())
+			return false;
+		
+		if (!Vehicle.Cast(player.GetRootParent()))
+			return false;
+		
+		SCR_BaseCompartmentManagerComponent compMan = SCR_BaseCompartmentManagerComponent.Cast(Vehicle.Cast(player.GetRootParent()).FindComponent(SCR_BaseCompartmentManagerComponent));
+		array<BaseCompartmentSlot> compartments = {};
+		compMan.GetCompartments(compartments);
+		foreach (BaseCompartmentSlot compartment: compartments)
+		{
+			if (!compartment.IsOccupied())
+				continue;
+			
+			if (compartment.GetOccupant() == senderEntity)
+				return true;
+		}
+		return false;
+	}
+	
 	bool ShouldMuffleAudio(IEntity senderEntity, int playerId = 0, out int loweredDecibles = 0)
 	{
 		if (CanPlayerSeeSender(senderEntity))
@@ -946,6 +968,10 @@ modded class SCR_VONController
 		bool isPlayerInVehicle;
 		bool isSenderInBuilding = IsInBuildingOrVehicle(senderEntity, senderBuilding, isSenderInVehicle);
 		bool isPlayerInBuilding = IsInBuildingOrVehicle(player, receiverBuilding, isPlayerInVehicle);
+		//quick sanity check as above can sometimes be off if the players hatch is open, god I gotta rewrite this
+		if (CheckIfInSameVehicle(senderEntity, player))
+			return false;
+		
 		if (!isSenderInBuilding && !isPlayerInBuilding)
 			return false;
 		
