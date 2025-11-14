@@ -96,6 +96,9 @@ modded class SCR_PlayerController
 	//Loading settings only works if the radios where pe configured with the CVON_FreqConfig.
 	void InitializeRadios(IEntity to)
 	{
+		if (!CVON_VONGameModeComponent.GetInstance())
+			return;
+		
 		if (GetGame().GetPlayerController())
 		{
 			SCR_VONController vonController = SCR_VONController.Cast(GetGame().GetPlayerController().FindComponent(SCR_VONController));
