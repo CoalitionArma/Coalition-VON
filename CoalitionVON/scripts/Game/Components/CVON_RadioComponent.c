@@ -238,7 +238,6 @@ class CVON_RadioComponent: ScriptComponent
 	{
 		//Have this ifdef here cause in the workshop its a listen server, I explain the code in the non workshop version.
 		#ifdef WORKBENCH
-		Print("Initialize Radio");
 		if (m_sFactionKey != "")
 			return;
 	
@@ -420,6 +419,7 @@ class CVON_RadioComponent: ScriptComponent
 		if (!radios)
 			return;
 		string radioFreqs = "";
+		string factionKeys = "";
 		foreach (RplId radio: radios)
 		{
 			IEntity radioEntity = RplComponent.Cast(Replication.FindItem(radio)).GetEntity();
@@ -437,8 +437,9 @@ class CVON_RadioComponent: ScriptComponent
 				VONSave.WriteValue("FactionKey", "");
 			VONSave.EndObject();
 			radioFreqs += radioComp.m_sFrequency + "|";
+			factionKeys += radioComp.m_sFactionKey + "|";
 		}
-		SCR_PlayerController.Cast(GetGame().GetPlayerController()).UpdateFreqArray(radioFreqs);
+		SCR_PlayerController.Cast(GetGame().GetPlayerController()).UpdateFreqArray(radioFreqs, factionKeys);
 		VONSave.SaveToFile("$profile:/RadioData.json");
 	}
 	

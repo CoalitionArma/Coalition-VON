@@ -7,11 +7,8 @@ class CVON_RadioSettingObject
 
 modded class SCR_PlayerController
 {
-	//This is how we store who is talking to us and how, we use this in the VONController to populate the JSON.
-	ref array<ref CVON_VONContainer> m_aLocalActiveVONEntries = {};
-	
 	//Used so we can find the entry by playerId
-	ref array<int> m_aLocalActiveVONEntriesIds = {};
+	ref map<int, ref CVON_VONContainer> m_aLocalEntries = new map<int, ref CVON_VONContainer>;
 	
 	//Local client and Server track this array. Used to determine radios priority, 0 = SR, 1 = LR, 2 = MR. Keybinds line up like that.
 	ref array<IEntity> m_aRadios = {};
@@ -106,8 +103,7 @@ modded class SCR_PlayerController
 		}
 		m_aRadios.Clear();
 		//Reforger Lobby bs
-		m_aLocalActiveVONEntries.Clear();
-		m_aLocalActiveVONEntriesIds.Clear();
+		m_aLocalEntries.Clear();
 		array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(to);
 		if (!radios)
 			return;
@@ -244,9 +240,9 @@ modded class SCR_PlayerController
 	[RplRpc(RplChannel.Reliable, RplRcver.Owner)] 
 	void RpcAsk_AddLocalVONBroadcast(CVON_VONContainer VONContainer, int playerId, vector senderOrigin, float maxDistance)
 	{
-		if (m_aLocalActiveVONEntriesIds.Contains(playerId))
+		if (m_aLocalEntries.Contains(playerId))
 		{
-			CVON_VONContainer vonContainerLocal = m_aLocalActiveVONEntries.Get(m_aLocalActiveVONEntriesIds.Find(playerId));
+			CVON_VONContainer vonContainerLocal = m_aLocalEntries.Get(playerId);
 			vonContainerLocal.m_eVonType = CVON_EVONType.RADIO;
 			vonContainerLocal.m_sFrequency = VONContainer.m_sFrequency;
 			vonContainerLocal.m_iRadioId = VONContainer.m_iRadioId;
@@ -257,23 +253,22 @@ modded class SCR_PlayerController
 		}
 		VONContainer.m_iMaxDistance = maxDistance;
 		VONContainer.m_vSenderLocation = senderOrigin;
-		m_aLocalActiveVONEntries.Insert(VONContainer);
-		m_aLocalActiveVONEntriesIds.Insert(playerId);
+		m_aLocalEntries.Insert(playerId, VONContainer);
 	}
 	
 	
 	//Just tells the clients who have our VON broadcast to remove it.
 	//==========================================================================================================================================================================
-	void BroadcastRemoveLocalVONToServer(int playerId, int playerIdToRemove)
+	void BroadcastRemoveLocalVONToServer(int playerIdToRemove)
 	{
-		Rpc(RpcAsk_BroadcastRemoveLocalVONToServer, playerId, playerIdToRemove);
+		Rpc(RpcAsk_BroadcastRemoveLocalVONToServer, playerIdToRemove);
 	}
 	
 	//==========================================================================================================================================================================
 	[RplRpc(RplChannel.Reliable, RplRcver.Server)] 
-	void RpcAsk_BroadcastRemoveLocalVONToServer(int playerId, int playerIdToRemove)
+	void RpcAsk_BroadcastRemoveLocalVONToServer(int playerIdToRemove)
 	{
-		CVON_VONGameModeComponent.GetInstance().RemoveLocalVONBroadcasts(playerId, playerIdToRemove);
+		CVON_VONGameModeComponent.GetInstance().RemoveLocalVONBroadcasts(playerIdToRemove);	
 	}
 	
 	//Same concept as above, just direct communication from server to specific client to remove a VONEntry.
@@ -287,11 +282,10 @@ modded class SCR_PlayerController
 	[RplRpc(RplChannel.Reliable, RplRcver.Owner)] 
 	void RpcAsk_RemoveLocalVONBroadcast(int playerIdToRemove)
 	{
-		int index = m_aLocalActiveVONEntriesIds.Find(playerIdToRemove);
-		if (index == -1)
+		if (!m_aLocalEntries.Contains(playerIdToRemove))
 			return;
-		m_aLocalActiveVONEntries.RemoveOrdered(index);
-		m_aLocalActiveVONEntriesIds.RemoveOrdered(index);
+		
+		m_aLocalEntries.Remove(playerIdToRemove);
 	}
 	
 	//All these are described already in the radio component, this is just how we get the authority to do it from the proxy.
@@ -485,18 +479,23 @@ modded class SCR_PlayerController
 		radioComp.WriteJSON(GetLocalControlledEntity());
 	}
 	
-	void UpdateFreqArray(string radioFreqs)
+	void UpdateFreqArray(string radioFreqs, string factionKeys)
 	{
-		Rpc(RpcDo_UpdateFreqArray, SCR_PlayerController.GetLocalPlayerId(), radioFreqs);
+		Rpc(RpcDo_UpdateFreqArray, SCR_PlayerController.GetLocalPlayerId(), radioFreqs, factionKeys);
 	}
 	
 	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
-	void RpcDo_UpdateFreqArray(int playerId, string radioFreqs)
+	void RpcDo_UpdateFreqArray(int playerId, string radioFreqs, string factionKeys)
 	{
 		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
 		if (!gamemode.m_PlayerFreqArray.Contains(playerId))
 			gamemode.m_PlayerFreqArray.Insert(playerId, radioFreqs);
 		else
 			gamemode.m_PlayerFreqArray.Set(playerId, radioFreqs);
+		
+		if (!gamemode.m_PlayerKeyArray.Contains(playerId))
+			gamemode.m_PlayerKeyArray.Insert(playerId, factionKeys);
+		else
+			gamemode.m_PlayerKeyArray.Set(playerId, factionKeys);
 	}
 }

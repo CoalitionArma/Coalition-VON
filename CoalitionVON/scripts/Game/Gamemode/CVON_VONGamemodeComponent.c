@@ -27,6 +27,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	[RplProp()] ref array<int> m_aPlayerIds = {};
 	string m_sTeamspeakPluginVersion = "1.9.9";
 	ref map <int, string> m_PlayerFreqArray = new map <int, string>;
+	ref map <int, string> m_PlayerKeyArray = new map <int, string>;
 	
 	//If disabled everyone shares the same frequencies.
 	[Attribute("1")] bool m_bUseFactionEcncryption;
@@ -78,6 +79,12 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	override void OnPlayerDisconnected(int playerId, KickCauseCode cause, int timeout)
 	{
 		super.OnPlayerDisconnected(playerId, cause, timeout);
+		if (m_PlayerFreqArray.Contains(playerId))
+			m_PlayerFreqArray.Remove(playerId);
+		
+		if (m_PlayerKeyArray.Contains(playerId))
+			m_PlayerKeyArray.Remove(playerId);
+		
 		if (!m_aPlayerIds.Contains(playerId))
 			return;
 		
@@ -182,7 +189,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		if (radioId != RplId.Invalid())
 		{
 			if (!Replication.FindItem(radioId))
-			return;
+				return;
 		
 			IEntity radio = RplComponent.Cast(Replication.FindItem(radioId)).GetEntity();
 			if (!radio)
@@ -197,6 +204,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		
 		foreach (int playerId: playerIds)
 		{
+			if (playerId == playerIdToAdd)
+				continue;
+			
 			if (!m_PlayerFreqArray.Contains(playerId))
 				continue;
 			
@@ -209,6 +219,17 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			
 			if (!matchedFreq)
 				continue;
+			
+			bool matchedKeys = false;
+			foreach (string key: GetFactionKeysFromFreqMap(playerId))
+			{
+				if (key == VONContainer.m_sFactionKey)
+					matchedKeys = true;
+			}
+			
+			if (!matchedKeys)
+				continue;
+			
 			
 			if (!GetGame().GetPlayerManager().GetPlayerController(playerId))
 				continue;
@@ -224,15 +245,33 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		return freq;
 	}
 	
+	array<string> GetFactionKeysFromFreqMap(int playerId)
+	{
+		string freqs = m_PlayerKeyArray.Get(playerId);
+		array<string> factionKeys = {};
+		freqs.Split("|", factionKeys, false);
+		return factionKeys;
+	}
+	
 	
 	//Same as above braodcasts only to the player that specifically needs to remove the broadcast
 	//==========================================================================================================================================================================
-	void RemoveLocalVONBroadcasts(int playerId, int playerIdToRemove)
+	void RemoveLocalVONBroadcasts(int playerIdToRemove)
 	{
-		if (!GetGame().GetPlayerManager().GetPlayerController(playerId))
-			return;
+		array<int> playerIds = {};
+		GetGame().GetPlayerManager().GetPlayers(playerIds);
+		foreach (int playerId: playerIds)
+		{
+			if (playerId == playerIdToRemove)
+				continue;
+			
+			SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
+			if (!pc)
+				continue;
 		
-		SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).RemoveLocalVONBroadcast(playerIdToRemove);
+			pc.RemoveLocalVONBroadcast(playerIdToRemove);
+		}
+		
 	}
 	
 	//Just an easy way for me to get all the radios on an entity.

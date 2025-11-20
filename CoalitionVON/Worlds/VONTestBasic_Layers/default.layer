@@ -54,7 +54,7 @@ Vehicle M1 : "{4A71F755A4513227}Prefabs/Vehicles/Wheeled/M998/M1025.et" {
 }
 SCR_DestructibleBuildingEntity : "{509F83E199DA4EB0}Prefabs/Structures/Houses/Village/House_Village_E_1I03/House_Village_E_1I03_base.et" {
  coords 147.101 0.001 173.335
- angleY -178
+ angles 0 -178 0
 }
 SCR_SpawnPoint : "{5A2220DD0C16958B}Prefabs/MP/Spawning/SpawnPoint_US.et" {
  coords 137.887 1 171.251
