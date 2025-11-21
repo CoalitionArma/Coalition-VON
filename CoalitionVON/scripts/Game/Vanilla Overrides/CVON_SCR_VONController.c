@@ -584,48 +584,50 @@ modded class SCR_VONController
 				else
 					continue;
 			}
-			
-			SCR_CharacterControllerComponent charCont = SCR_CharacterControllerComponent.Cast(ChimeraCharacter.Cast(player).GetCharacterController());
-			if (charCont.IsDead() || charCont.IsUnconscious())
-				if (m_PlayerController.m_aLocalEntries.Contains(playerId))
-				{
-					m_PlayerController.m_aLocalEntries.Remove(playerId);
-					continue;
-				}
-				else
-					continue;
-			
-			int maxDistance = m_VONGameModeComponent.GetPlayerVolume(playerId);
-			maxDistance *= maxDistance;
-			float distance = vector.DistanceSq(player.GetOrigin(), m_Camera.GetOrigin());
-			if (distance > maxDistance)
-			{
-				if (m_PlayerController.m_aLocalEntries.Contains(playerId))
-				{
-					//If this VON Transmission is radio, don't do shit
-					if (m_PlayerController.m_aLocalEntries.Get(playerId).m_eVonType == CVON_EVONType.RADIO)
-						continue;
-					m_PlayerController.m_aLocalEntries.Remove(playerId);
-					continue;
-				}
-				else
-					continue;
-			}
 			else
 			{
-				if (m_PlayerController.m_aLocalEntries.Contains(playerId))
-					continue;
+				SCR_CharacterControllerComponent charCont = SCR_CharacterControllerComponent.Cast(ChimeraCharacter.Cast(player).GetCharacterController());
+				if (charCont.IsDead() || charCont.IsUnconscious())
+					if (m_PlayerController.m_aLocalEntries.Contains(playerId))
+					{
+						m_PlayerController.m_aLocalEntries.Remove(playerId);
+						continue;
+					}
+					else
+						continue;
+				
+				int maxDistance = m_VONGameModeComponent.GetPlayerVolume(playerId);
+				maxDistance *= maxDistance;
+				float distance = vector.DistanceSq(player.GetOrigin(), m_Camera.GetOrigin());
+				if (distance > maxDistance)
+				{
+					if (m_PlayerController.m_aLocalEntries.Contains(playerId))
+					{
+						//If this VON Transmission is radio, don't do shit
+						if (m_PlayerController.m_aLocalEntries.Get(playerId).m_eVonType == CVON_EVONType.RADIO)
+							continue;
+						m_PlayerController.m_aLocalEntries.Remove(playerId);
+						continue;
+					}
+					else
+						continue;
+				}
 				else
 				{
-					CVON_VONContainer container = new CVON_VONContainer();
-					container.m_eVonType = CVON_EVONType.DIRECT;
-					container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(playerId);
-					container.m_SenderRplId = RplComponent.Cast(player.FindComponent(RplComponent)).Id();
-					container.m_iClientId = m_PlayerController.GetPlayersTeamspeakClientId(playerId);
-					container.m_iPlayerId = playerId;
-					m_PlayerController.m_aLocalEntries.Insert(playerId, container);
+					if (m_PlayerController.m_aLocalEntries.Contains(playerId))
+						continue;
+					else
+					{
+						CVON_VONContainer container = new CVON_VONContainer();
+						container.m_eVonType = CVON_EVONType.DIRECT;
+						container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(playerId);
+						container.m_SenderRplId = RplComponent.Cast(player.FindComponent(RplComponent)).Id();
+						container.m_iClientId = m_PlayerController.GetPlayersTeamspeakClientId(playerId);
+						container.m_iPlayerId = playerId;
+						m_PlayerController.m_aLocalEntries.Insert(playerId, container);
+					}
+					
 				}
-				
 			}
 		}
 		
