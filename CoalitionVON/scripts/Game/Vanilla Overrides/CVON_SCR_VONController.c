@@ -1106,7 +1106,7 @@ modded class SCR_VONController
 			{
 				if (!m_MenuManager.GetTopMenu())
 					m_MenuManager.OpenMenu(ChimeraMenuPreset.CVON_WarningMenu);
-				else if (!m_MenuManager.GetTopMenu().IsInherited(CVON_WarningMenu))
+				else if (!m_MenuManager.GetTopMenu().IsInherited(CVON_WarningMenu) && !m_MenuManager.GetTopMenu().IsInherited(PauseMenuUI))
 					m_MenuManager.OpenMenu(ChimeraMenuPreset.CVON_WarningMenu);
 			}
 				
