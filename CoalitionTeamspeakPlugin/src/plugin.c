@@ -1371,7 +1371,6 @@ static void apply_proximity_muting(uint64 sch)
     if (!sch)
         return;
 
-
     anyID myID;
     if (ts3Functions.getClientID(sch, &myID) != ERROR_ok)
         return;
@@ -1384,17 +1383,41 @@ static void apply_proximity_muting(uint64 sch)
     if (ts3Functions.getChannelClientList(sch, myChannel, &clients) != ERROR_ok || !clients)
         return;
 
-    for (int i = 0; clients[i]; ++i) {
+    for (int i = 0; clients[i]; ++i)
+    {
         anyID cid = clients[i];
         if (cid == myID)
             continue;
 
         const VonEntry* e = find_entry(cid);
+        ClientApplyState* st = get_client_state(cid);
+        if (!st)
+            continue;
 
-        if (!e)
-            ts3Functions.requestMuteClients(sch, &cid, NULL);
-        else
-            ts3Functions.requestUnmuteClients(sch, &cid, NULL);
+        /* Client has no VON entry → OUT OF RANGE → should be muted */
+        int shouldMute = (!e);
+
+        /* ---- MUTE ---- */
+        if (shouldMute && !st->isMutedByPlugin) 
+        {
+            anyID arr[2] = { cid, 0 };
+            unsigned int err = ts3Functions.requestMuteClients(sch, arr, NULL);
+            if (err == ERROR_ok) {
+                st->isMutedByPlugin = 1;
+                logf("[CRF] Muted client %u (no VON data)\n", (unsigned)cid);
+            }
+        }
+
+        /* ---- UNMUTE ---- */
+        else if (!shouldMute && st->isMutedByPlugin)
+        {
+            anyID arr[2] = { cid, 0 };
+            unsigned int err = ts3Functions.requestUnmuteClients(sch, arr, NULL);
+            if (err == ERROR_ok) {
+                st->isMutedByPlugin = 0;
+                logf("[CRF] Unmuted client %u (VON active)\n", (unsigned)cid);
+            }
+        }
     }
 
     ts3Functions.freeMemory(clients);
@@ -1436,7 +1459,7 @@ static DWORD WINAPI worker_main(LPVOID param)
 
     while (InterlockedCompareExchange(&g_workerQuit, 0, 0) == 0) {
         DWORD  now = GetTickCount();
-        uint64 sch = ts3Functions.getCurrentServerConnectionHandlerID();;
+        uint64 sch = ts3Functions.getCurrentServerConnectionHandlerID();
 
         /* ---------------- ServerData reload/write ---------------- */
         if (now >= g_nextServerReloadTick) {
@@ -1452,39 +1475,65 @@ static DWORD WINAPI worker_main(LPVOID param)
         /* ---------------- Auto-connect if IP changed ---------------- */
         if (g_SD_have && g_SD_inGame && g_SD_serverIp[0]) {
             if (strcmp(g_lastAutoConnectIp, g_SD_serverIp) != 0) {
-                // Ask user first
-                const char* nickname = g_SD_ingameName[0] ? g_SD_ingameName : "ReforgerUser";
-                if (!confirm_autoconnect(g_SD_serverIp, nickname)) {
-                    logf("[CRF] User declined auto-connect to %s\n", g_SD_serverIp);
-                    strncpy(g_lastAutoConnectIp, g_SD_serverIp, sizeof(g_lastAutoConnectIp) - 1);
-                    g_lastAutoConnectIp[sizeof(g_lastAutoConnectIp) - 1] = '\0';
-                    continue; // skip this attempt, don’t retry until IP changes again
-                }
+                    int    alreadyConnected = 0;
+                    if (sch) {
 
-                // If we had a previous auto-connect, disconnect it first
-                if (g_lastAutoConnectSch) {
-                    unsigned int derr = ts3Functions.stopConnection(g_lastAutoConnectSch, "Switching game server");
-                    if (derr == ERROR_ok) {
-                        logf("[CRF] Closed previous connection (%s)\n", g_lastAutoConnectIp);
-                    } else {
-                        logf("[CRF] Failed to close previous connection, err=%u\n", derr);
+                    anyID myId = 0;
+                    if (ts3Functions.getClientID(sch, &myId) == ERROR_ok && myId != 0) {
+
+                        char* curIp = NULL;
+
+                        if (ts3Functions.getConnectionVariableAsString(sch, myId, CONNECTION_SERVER_IP, &curIp) == ERROR_ok && curIp) {
+                            alreadyConnected = (strcmp(curIp, g_SD_serverIp) == 0);
+                            ts3Functions.freeMemory(curIp);
+                        }
                     }
-                    g_lastAutoConnectSch   = 0;
-                    g_lastAutoConnectIp[0] = '\0';
-                }
 
-                // Try connecting to the new IP using the *current* tab
-                uint64       newSch = 0;
-                unsigned int err    = ts3Functions.guiConnect(PLUGIN_CONNECT_TAB_CURRENT, "Arma Reforger AutoConnect", g_SD_serverIp, g_SD_serverPassword, nickname, "", "", NULL, NULL, NULL, NULL, NULL, NULL, NULL, &newSch);
+                    if (alreadyConnected) {
+                        /* Mark this IP as handled so we do NOT ask again */
+                        strncpy(g_lastAutoConnectIp, g_SD_serverIp, sizeof(g_lastAutoConnectIp) - 1);
+                        g_lastAutoConnectIp[sizeof(g_lastAutoConnectIp) - 1] = '\0';
+                        /* Skip popup & connection attempt */
+                        goto skip_autoconnect;
+                    }
 
-                if (err == ERROR_ok) {
-                    logf("[CRF] Auto-connected to %s as %s\n", g_SD_serverIp, nickname);
-                    strncpy(g_lastAutoConnectIp, g_SD_serverIp, sizeof(g_lastAutoConnectIp) - 1);
-                    g_lastAutoConnectIp[sizeof(g_lastAutoConnectIp) - 1] = '\0';
-                    g_lastAutoConnectSch                                 = newSch;
-                } else {
-                    logf("[CRF] Auto-connect failed (%u)\n", err);
-                    // don’t update globals so we retry on next loop
+                    /* ---- Original logic follows only if not already connected ---- */
+                    if (strcmp(g_lastAutoConnectIp, g_SD_serverIp) != 0) {
+
+                        const char* nickname = g_SD_ingameName[0] ? g_SD_ingameName : "ReforgerUser";
+
+                        if (!confirm_autoconnect(g_SD_serverIp, nickname)) {
+                            strncpy(g_lastAutoConnectIp, g_SD_serverIp, sizeof(g_lastAutoConnectIp) - 1);
+                            g_lastAutoConnectIp[sizeof(g_lastAutoConnectIp) - 1] = '\0';
+                            goto skip_autoconnect; /* do NOT try again until IP changes */
+                        }
+
+                        /* Close old auto-connection if needed */
+                        if (g_lastAutoConnectSch) {
+                            unsigned int derr = ts3Functions.stopConnection(g_lastAutoConnectSch, "Switching game server");
+                            if (derr == ERROR_ok) {
+                                logf("[CRF] Closed previous connection (%s)\n", g_lastAutoConnectIp);
+                            } else {
+                                logf("[CRF] Failed to close previous connection, err=%u\n", derr);
+                            }
+                            g_lastAutoConnectSch   = 0;
+                            g_lastAutoConnectIp[0] = '\0';
+                        }
+
+                        /* Connect */
+                        uint64       newSch = 0;
+                        unsigned int err    = ts3Functions.guiConnect(PLUGIN_CONNECT_TAB_CURRENT, "Arma Reforger AutoConnect", g_SD_serverIp, g_SD_serverPassword, nickname, "", "", NULL, NULL, NULL, NULL, NULL, NULL, NULL, &newSch);
+
+                        if (err == ERROR_ok) {
+                            logf("[CRF] Auto-connected to %s as %s\n", g_SD_serverIp, nickname);
+                            strncpy(g_lastAutoConnectIp, g_SD_serverIp, sizeof(g_lastAutoConnectIp) - 1);
+                            g_lastAutoConnectIp[sizeof(g_lastAutoConnectIp) - 1] = '\0';
+                            g_lastAutoConnectSch                                 = newSch;
+                        } else {
+                            logf("[CRF] Auto-connect failed (%u)\n", err);
+                        }
+                    }
+                    skip_autoconnect:;
                 }
             }
         }
@@ -1574,7 +1623,7 @@ PL_EXPORT const char* ts3plugin_name()
 }
 PL_EXPORT const char* ts3plugin_version()
 {
-    return "1.9.9";
+    return "2.0.0";
 }
 PL_EXPORT int ts3plugin_apiVersion()
 {

@@ -55,6 +55,7 @@ class CVON_RadioComponent: ScriptComponent
 	string m_sTempFrequency = "55500";
 	int m_iTempTimeDeviation = 0;
 	string m_sTempFactionKey = "";
+	bool m_bTempPower = false;
 	
 	//How loud the radio is
 	int m_iVolume = 9;
@@ -224,12 +225,13 @@ class CVON_RadioComponent: ScriptComponent
 		
 			
 		
-		if (m_iTempChannel != m_iCurrentChannel || m_sTempFrequency != m_sFrequency || m_iTempTimeDeviation != m_iTimeDeviation || m_sTempFactionKey != m_sFactionKey)
+		if (m_iTempChannel != m_iCurrentChannel || m_sTempFrequency != m_sFrequency || m_iTempTimeDeviation != m_iTimeDeviation || m_sTempFactionKey != m_sFactionKey || m_bTempPower != m_bPower)
 		{
 			m_iTempChannel = m_iCurrentChannel;
 			m_sTempFrequency = m_sFrequency;
 			m_iTempTimeDeviation = m_iTimeDeviation;
 			m_sTempFactionKey = m_sFactionKey;
+			m_bTempPower = m_bPower;
 			WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
 		}
 	}
@@ -424,7 +426,7 @@ class CVON_RadioComponent: ScriptComponent
 		{
 			IEntity radioEntity = RplComponent.Cast(Replication.FindItem(radio)).GetEntity();
 			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
-			if (!m_bPower)
+			if (!radioComp.m_bPower)
 				continue;
 			VONSave.StartObject(radio.ToString());
 			VONSave.WriteValue("Freq", radioComp.m_sFrequency);

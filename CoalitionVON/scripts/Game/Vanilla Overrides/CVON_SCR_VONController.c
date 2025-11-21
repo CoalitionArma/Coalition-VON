@@ -492,7 +492,6 @@ modded class SCR_VONController
 	//==========================================================================================================================================================================
 	float m_fWriteTeamspeakClientIdCooldown = 0;
 	ref array<int> m_PlayerIdTemp = {};
-	ref array<int> m_BroadcastTemp = {};
 	float m_fHeadCacheBuffer = 0;
 	override void EOnFixedFrame(IEntity owner, float timeSlice)
 	{
@@ -507,8 +506,7 @@ modded class SCR_VONController
 		if (!m_PlayerController)
 			m_PlayerController = SCR_PlayerController.Cast(GetGame().GetPlayerController());
 		
-		if (!m_Player && m_PlayerController)
-			m_Player = m_PlayerController.GetControlledEntity();
+		m_Player = m_PlayerController.GetControlledEntity();
 		
 		if (!m_CharacterController)
 			if (m_Player)
@@ -528,10 +526,6 @@ modded class SCR_VONController
 		m_PlayerIdTemp.Clear();
 		m_PlayerManager.GetPlayers(m_PlayerIdTemp);
 		
-		//When a player disconnects, they are no longer in the players array, so it just leaves an empty container.
-		//This removes that container as when they reconnect they will no longer be heard.
-		//Also handles head height caching
-		//Also sound updating for maximum optimizations
 		if (m_fHeadCacheBuffer >= 0.2)
 		{
 			UpdateHeadCache();
@@ -539,6 +533,10 @@ modded class SCR_VONController
 		}
 		else
 			m_fHeadCacheBuffer += timeSlice;
+		
+		//When a player disconnects, they are no longer in the players array, so it just leaves an empty container.
+		//This removes that container as when they reconnect they will no longer be heard.
+		//Also sound updating for maximum optimizations
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
 			if (!m_PlayerIdTemp.Contains(playerId))
@@ -622,7 +620,7 @@ modded class SCR_VONController
 					CVON_VONContainer container = new CVON_VONContainer();
 					container.m_eVonType = CVON_EVONType.DIRECT;
 					container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(playerId);
-					container.m_SenderRplId = RplComponent.Cast(m_PlayerManager.GetPlayerControlledEntity(playerId).FindComponent(RplComponent)).Id();
+					container.m_SenderRplId = RplComponent.Cast(player.FindComponent(RplComponent)).Id();
 					container.m_iClientId = m_PlayerController.GetPlayersTeamspeakClientId(playerId);
 					container.m_iPlayerId = playerId;
 					m_PlayerController.m_aLocalEntries.Insert(playerId, container);
