@@ -645,7 +645,7 @@ modded class SCR_VONController
 					DeactivateCVON();
 				return;
 			}
-			m_PlayerController.BroadcastLocalVONToServer(m_CurrentVONContainer, m_PlayerIdTemp, m_PlayerController.GetPlayerId(), m_CurrentVONContainer.m_iRadioId);
+			m_PlayerController.BroadcastLocalVONToServer(m_CurrentVONContainer, m_PlayerController.GetPlayerId(), m_CurrentVONContainer.m_iRadioId);
 					
 		}
 		WriteJSON();

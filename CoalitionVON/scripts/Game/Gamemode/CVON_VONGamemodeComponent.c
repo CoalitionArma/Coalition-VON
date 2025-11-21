@@ -183,7 +183,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	//This makes it so only the players that need to get the VONEntry get it, saving on that sweet sweet sweet network.
 	//Broadcasts are only tracked on the clients, server doesn't track it anywhere.
 	//==========================================================================================================================================================================
-	void AddLocalVONBroadcasts(CVON_VONContainer VONContainer, array<int> playerIds, int playerIdToAdd, RplId radioId)
+	void AddLocalVONBroadcasts(CVON_VONContainer VONContainer, int playerIdToAdd, RplId radioId)
 	{
 		int maxDist = 0;
 		if (radioId != RplId.Invalid())
@@ -202,6 +202,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			maxDist = radioComp.m_iRadioRange;
 		}
 		
+		
+		array<int> playerIds = {};
+		GetGame().GetPlayerManager().GetPlayers(playerIds);
 		foreach (int playerId: playerIds)
 		{
 			if (playerId == playerIdToAdd)

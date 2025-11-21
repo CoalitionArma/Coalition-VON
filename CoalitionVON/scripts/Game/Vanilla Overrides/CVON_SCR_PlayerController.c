@@ -216,16 +216,16 @@ modded class SCR_PlayerController
 	
 	//This is how we send our VONEntry to other clients so they can write it in their VONData.json
 	//==========================================================================================================================================================================
-	void BroadcastLocalVONToServer(CVON_VONContainer VONContainer, array<int> playerIds, int playerId, RplId radioId)
+	void BroadcastLocalVONToServer(CVON_VONContainer VONContainer, int playerId, RplId radioId)
 	{
-		Rpc(RpcAsk_BroadcastLocalVONToServer, VONContainer, playerIds, playerId, radioId);
+		Rpc(RpcAsk_BroadcastLocalVONToServer, VONContainer, playerId, radioId);
 	}
 	
 	//==========================================================================================================================================================================
 	[RplRpc(RplChannel.Reliable, RplRcver.Server)] 
-	void RpcAsk_BroadcastLocalVONToServer(CVON_VONContainer VONContainer, array<int> playerIds, int playerId, RplId radioId)
+	void RpcAsk_BroadcastLocalVONToServer(CVON_VONContainer VONContainer, int playerId, RplId radioId)
 	{
-		CVON_VONGameModeComponent.GetInstance().AddLocalVONBroadcasts(VONContainer, playerIds, playerId, radioId);
+		CVON_VONGameModeComponent.GetInstance().AddLocalVONBroadcasts(VONContainer, playerId, radioId);
 	}
 	
 	//This is how the server talks directly to us, by doing an Rpc to the owner, which is the player of this controller, it sends it directly to them.
