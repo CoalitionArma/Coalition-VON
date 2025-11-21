@@ -493,6 +493,7 @@ modded class SCR_VONController
 	float m_fWriteTeamspeakClientIdCooldown = 0;
 	ref array<int> m_PlayerIdTemp = {};
 	float m_fHeadCacheBuffer = 0;
+	float m_fVONSaveBuffer = 0;
 	override void EOnFixedFrame(IEntity owner, float timeSlice)
 	{
 		super.EOnFixedFrame(owner, timeSlice);
@@ -650,7 +651,14 @@ modded class SCR_VONController
 			m_PlayerController.BroadcastLocalVONToServer(m_CurrentVONContainer, m_PlayerController.GetPlayerId(), m_CurrentVONContainer.m_iRadioId);
 					
 		}
-		WriteJSON();
+		
+		//Our plugin only checks every 50ms
+		if (m_fVONSaveBuffer >= 0.05)
+		{
+			WriteJSON();
+			m_fVONSaveBuffer = 0;
+		}
+		else m_fVONSaveBuffer += timeSlice;
 	}
 	
 	//Thank god for CHATGPT
