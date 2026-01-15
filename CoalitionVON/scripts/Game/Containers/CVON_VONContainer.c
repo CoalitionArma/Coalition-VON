@@ -40,7 +40,7 @@ class CVON_VONContainer
 	
 	bool m_bIsSpectator = false;
 	
-	
+	int m_iTimeDeviation;
 	
 	// Values processed by the client itself
 	//The distance from the receiver to the sender
@@ -64,6 +64,7 @@ class CVON_VONContainer
 		snapshot.SerializeBytes(instance.m_iClientId, 4);
 		snapshot.SerializeString(instance.m_sFactionKey);
 		snapshot.SerializeBytes(instance.m_iPlayerId, 4);
+		snapshot.SerializeBytes(instance.m_iTimeDeviation, 4);
 		
 		return true;
 	}
@@ -77,6 +78,7 @@ class CVON_VONContainer
 		snapshot.SerializeBytes(instance.m_iClientId, 4);
 		snapshot.SerializeString(instance.m_sFactionKey);
 		snapshot.SerializeBytes(instance.m_iPlayerId, 4);
+		snapshot.SerializeBytes(instance.m_iTimeDeviation, 4);
 		
 		return true;
 	}
@@ -90,6 +92,7 @@ class CVON_VONContainer
 		snapshot.EncodeInt(packet);
 		snapshot.EncodeString(packet);
 		snapshot.EncodeInt(packet);
+		snapshot.EncodeInt(packet);
 	}
 	
 	static bool Decode(ScriptBitSerializer packet, ScriptCtx ctx, SSnapSerializerBase snapshot)
@@ -100,6 +103,7 @@ class CVON_VONContainer
 		snapshot.DecodeInt(packet);
 		snapshot.DecodeInt(packet);
 		snapshot.DecodeString(packet);
+		snapshot.DecodeInt(packet);
 		snapshot.DecodeInt(packet);
 		
 		return true;
@@ -113,6 +117,7 @@ class CVON_VONContainer
 		&& lhs.CompareSnapshots(rhs, 4)
 		&& lhs.CompareSnapshots(rhs, 4)
 		&& lhs.CompareStringSnapshots(rhs)
+		&& lhs.CompareSnapshots(rhs, 4)
 		&& lhs.CompareSnapshots(rhs, 4);
 	}
 	
@@ -124,6 +129,7 @@ class CVON_VONContainer
 		&& snapshot.Compare(instance.m_iVolume, 4)
 		&& snapshot.Compare(instance.m_iClientId, 4)
 		&& snapshot.CompareString(instance.m_sFactionKey)
-		&& snapshot.Compare(instance.m_iPlayerId, 4);
+		&& snapshot.Compare(instance.m_iPlayerId, 4)
+		&& snapshot.Compare(instance.m_iTimeDeviation, 4);
 	}
 }

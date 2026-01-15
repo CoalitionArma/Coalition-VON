@@ -39,6 +39,9 @@ modded class SCR_VONController
 	//Am I broadcasting
 	bool m_bIsBroadcasting = false;
 	
+	//Have I already broadcasted my current von container
+	bool m_bHasBroadcasted = false;
+	
 	//Both are used so we can toggle our direct voice and use a radio at the same time
 	bool m_bToggleBuffer = false;
 	bool m_bToggleTurnedOffByRadio = false;
@@ -361,6 +364,7 @@ modded class SCR_VONController
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
+					container.m_iTimeDeviation = radioComp.m_iTimeDeviation;
 					switch (radioComp.m_eStereo)
 					{
 						case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{E3B4231783ABA914}UI/sounds/beepstart.wav"); break;}
@@ -413,6 +417,7 @@ modded class SCR_VONController
 		}
 		m_CurrentVONContainer = container;
 		m_bIsBroadcasting = true;
+		m_bHasBroadcasted = false;
 	}
 	
 	//No more base game VON
@@ -454,6 +459,7 @@ modded class SCR_VONController
 			m_VONHud.HideDirect();
 			
 		m_bIsBroadcasting = false;
+		m_bHasBroadcasted = true;
 		m_CurrentVONContainer = null;
 		
 
@@ -647,9 +653,13 @@ modded class SCR_VONController
 				else
 					DeactivateCVON();
 				return;
-			}
+			}	
+		}
+		
+		if (!m_bHasBroadcasted && m_bIsBroadcasting)
+		{
 			m_PlayerController.BroadcastLocalVONToServer(m_CurrentVONContainer, m_PlayerController.GetPlayerId(), m_CurrentVONContainer.m_iRadioId);
-					
+			m_bHasBroadcasted = true;
 		}
 		
 		//Our plugin only checks every 50ms

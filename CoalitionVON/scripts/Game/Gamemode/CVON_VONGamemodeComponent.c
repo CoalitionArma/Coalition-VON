@@ -135,6 +135,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 				ServerJSON.WriteValue("TeamspeakServerIP", m_sTeamSpeakServerIP);
 				ServerJSON.WriteValue("TeamspeakServerPassword", m_sTeamSpeakServerPassword);
 				ServerJSON.EndObject();
+			
 				ServerJSON.SaveToFile("$profile:/VONServerSettings.json");
 			}
 			Replication.BumpMe();
@@ -202,6 +203,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			maxDist = radioComp.m_iRadioRange;
 		}
 		
+		PlayerManager pm = GetGame().GetPlayerManager();
+		if (!pm)
+			return;
 		
 		array<int> playerIds = {};
 		GetGame().GetPlayerManager().GetPlayers(playerIds);
@@ -211,6 +215,10 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 				continue;
 			
 			if (!m_PlayerFreqArray.Contains(playerId))
+				continue;
+			
+			IEntity player = pm.GetPlayerControlledEntity(playerId);
+			if (!player)
 				continue;
 			
 			bool matchedFreq = false;
@@ -223,17 +231,34 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			if (!matchedFreq)
 				continue;
 			
-			bool matchedKeys = false;
-			foreach (string key: GetFactionKeysFromFreqMap(playerId))
+			array<IEntity> radios = GetRadioEntities(player);
+			
+			bool radioOnTimeAndKeysMatch = false;
+			if (radios.Count() > 0)
 			{
-				if (key == VONContainer.m_sFactionKey)
-					matchedKeys = true;
+				foreach (IEntity radio: radios)
+				{
+					if (!radio.FindComponent(CVON_RadioComponent))
+						continue;
+					
+					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					//Not the radio we are looking for
+					if (radioComp.m_sFrequency != VONContainer.m_sFrequency)
+						continue;
+					
+					if (radioComp.m_iTimeDeviation != VONContainer.m_iTimeDeviation)
+						continue;
+					
+					if (VONContainer.m_sFactionKey != radioComp.m_sFactionKey)
+						continue;
+					
+					radioOnTimeAndKeysMatch = true;
+				}
 			}
 			
-			if (!matchedKeys)
+			if (!radioOnTimeAndKeysMatch)
 				continue;
-			
-			
+
 			if (!GetGame().GetPlayerManager().GetPlayerController(playerId))
 				continue;
 			SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).AddLocalVONBroadcast(VONContainer, playerIdToAdd, GetGame().GetPlayerManager().GetPlayerControlledEntity(playerIdToAdd).GetOrigin(), maxDist);
@@ -294,6 +319,25 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 				continue;
 			
 			radios.Insert(RplComponent.Cast(item.FindComponent(RplComponent)).Id());
+		}
+		return radios;
+	}
+	
+	array<IEntity> GetRadioEntities(IEntity entity)
+	{
+		if (!entity)
+			return null;
+		
+		ref array<IEntity> radios = {};
+		SCR_InventoryStorageManagerComponent inventoryComp = SCR_InventoryStorageManagerComponent.Cast(entity.FindComponent(SCR_InventoryStorageManagerComponent));
+		ref array<IEntity> items = {};
+		inventoryComp.GetItems(items);
+		foreach (IEntity item: items)
+		{
+			if (!item.FindComponent(CVON_RadioComponent))
+				continue;
+			
+			radios.Insert(item);
 		}
 		return radios;
 	}

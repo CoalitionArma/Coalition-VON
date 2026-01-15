@@ -103,6 +103,7 @@ class CVON_RadioComponent: ScriptComponent
 			foreach (string factionKey: sharedFreq.m_aFactionIds)
 			{
 				sharedFactionKey += factionKey;
+				sharedFactionKey += "|";
 			}
 			isShared = true;
 			m_sFactionKey = sharedFactionKey;
@@ -110,6 +111,8 @@ class CVON_RadioComponent: ScriptComponent
 		int playerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(GetOwner().GetRootParent());
 		if (playerId > 0 && updateSettings)
 			SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).UpdateSettings();
+		if (!isShared)
+			m_sFactionKey = ownerFactionKey;
 		Replication.BumpMe();
 	}
 	
