@@ -44,7 +44,12 @@ class CVON_RadioComponent: ScriptComponent
 	//If enabled it makes it so only factions can hear just their factions radios, this is initialized when a radio is picked up for the first time
 	//This means if you pick up a russian radio you can hear a russian broadcast.
 	//If m_bIsFactionEncrypto.... disabled then this does nothing.
+	//These two strings below are generated on radio initilization onto a player and should almost never change except for when a frequency is shared
+	//Consider this the "Key Fill" for the radio.
 	[RplProp()] string m_sFactionKey = "";
+	
+	//Store this for any frequency changes that may result in it folding over into a shared frequency
+	string m_sOriginalFactionKey = "";
 	//Used to store any channels the player makes and the base channels definied in the faction.
 	[RplProp()] ref array<string> m_aChannels = {};
 	
@@ -112,7 +117,7 @@ class CVON_RadioComponent: ScriptComponent
 		if (playerId > 0 && updateSettings)
 			SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).UpdateSettings();
 		if (!isShared)
-			m_sFactionKey = ownerFactionKey;
+			m_sFactionKey = m_sOriginalFactionKey;
 		Replication.BumpMe();
 	}
 	
@@ -257,6 +262,7 @@ class CVON_RadioComponent: ScriptComponent
 			return;
 	
 		m_sFactionKey = factionComp.GetAffiliatedFactionKey();
+		m_sOriginalFactionKey = factionComp.GetAffiliatedFactionKey();
 		
 		SCR_Faction faction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sFactionKey));
 		ref array<string> SRFrequencies = {};
@@ -335,6 +341,7 @@ class CVON_RadioComponent: ScriptComponent
 				return;
 			
 			m_sFactionKey = factionComp.GetAffiliatedFactionKey();
+			m_sOriginalFactionKey = factionComp.GetAffiliatedFactionKey();
 			//Add that faction to this radio and get the faction to prep to load the factions frequencies
 			SCR_Faction faction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sFactionKey));
 	
