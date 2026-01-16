@@ -25,12 +25,15 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	[RplProp()] ref array<int> m_aPlayerVolumes = {};
 	[RplProp()] ref array<int> m_aPlayerClientIds = {};
 	[RplProp()] ref array<int> m_aPlayerIds = {};
-	string m_sTeamspeakPluginVersion = "2.0.0";
+	string m_sTeamspeakPluginVersion = "2.0.1";
 	ref map <int, string> m_PlayerFreqArray = new map <int, string>;
 	ref map <int, string> m_PlayerKeyArray = new map <int, string>;
 	
 	//If disabled everyone shares the same frequencies.
 	[Attribute("1")] bool m_bUseFactionEcncryption;
+	
+	//If disabled there will be no babbel for other factions
+	[Attribute("0")] bool m_bUseBabbel;
 	
 	//Mostly used so i don't lose my fucking MIND testing the mod in dedicated.
 	[Attribute("1")] bool m_bTeamspeakChecks;
@@ -187,6 +190,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	void AddLocalVONBroadcasts(CVON_VONContainer VONContainer, int playerIdToAdd, RplId radioId)
 	{
 		int maxDist = 0;
+		SCR_BaseGameMode gamemode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
+		if (!gamemode)
+			return;
 		if (radioId != RplId.Invalid())
 		{
 			if (!Replication.FindItem(radioId))
@@ -249,8 +255,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 					if (radioComp.m_iTimeDeviation != VONContainer.m_iTimeDeviation)
 						continue;
 					
-					if (VONContainer.m_sFactionKey != radioComp.m_sFactionKey)
-						continue;
+					if (gamemode.IsEncryptionEnabled())
+						if (VONContainer.m_sFactionKey != radioComp.m_sFactionKey)
+							continue;
 					
 					radioOnTimeAndKeysMatch = true;
 				}

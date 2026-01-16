@@ -16,6 +16,8 @@ modded class SCR_VONController
 	//MMMM POINTER
 	SCR_PlayerController m_PlayerController;
 	
+	SCR_BaseGameMode m_BaseGamemode;
+	
 	IEntity m_Player;
 	
 	RplComponent m_PlayerRplComponent;
@@ -513,6 +515,9 @@ modded class SCR_VONController
 		if (!m_PlayerController)
 			m_PlayerController = SCR_PlayerController.Cast(GetGame().GetPlayerController());
 		
+		if (!m_BaseGamemode)
+			m_BaseGamemode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
+		
 		m_Player = m_PlayerController.GetControlledEntity();
 		
 		if (!m_CharacterController)
@@ -704,7 +709,8 @@ modded class SCR_VONController
 	    IEntity listener,
 	    vector  sourcePos,
 	    float   volume_m,    
-		int 	playerId,        
+		int 	playerId,    
+		out float outBehindIntensity,    
 	    out float outLeft,
 	    out float outRight,
 	    out int  silencedDecibels = 0,
@@ -793,6 +799,8 @@ modded class SCR_VONController
 	        outLeft  = Math.Clamp(outLeft,  0.0, MAX_OUT_GAIN);
 	        outRight = Math.Clamp(outRight, 0.0, MAX_OUT_GAIN);
 	    }
+		
+		outBehindIntensity = CRF_AudioSpatialUtil.ComputeBehindIntensity(Lpos, sourcePos);
 	}
 	
 	// Convert attenuation in dB → linear (treats +/−dB the same)
@@ -1142,6 +1150,7 @@ modded class SCR_VONController
 			IEntity soundSource;
 			float left = 0;
 			float right = 0;
+			float behindIntensity = 0;
 			int loweredDecibels = 0;
 			string frequency = container.m_sFrequency;
 			if (!m_CharacterController)
@@ -1168,17 +1177,17 @@ modded class SCR_VONController
 				container.m_SoundSource = soundSource;
 				ShouldMuffleAudio(container.m_SoundSource, playerId, loweredDecibels);
 				if (loweredDecibels < 0)
-					ComputeStereoLR(localEntity, GetHeadHeight(soundSource), container.m_iVolume/1.25, playerId, left, right);
+					ComputeStereoLR(localEntity, GetHeadHeight(soundSource), container.m_iVolume/1.25, playerId, behindIntensity, left, right);
 				else
-					ComputeStereoLR(localEntity, GetHeadHeight(soundSource), container.m_iVolume, playerId, left, right);
+					ComputeStereoLR(localEntity, GetHeadHeight(soundSource), container.m_iVolume, playerId, behindIntensity, left, right);
 			}
 			else if (container.m_SoundSource && container.m_fDistanceToSender != -1)
 			{
 				ShouldMuffleAudio(container.m_SoundSource, playerId, loweredDecibels);
 				if (loweredDecibels < 0)
-					ComputeStereoLR(localEntity, GetHeadHeight(container.m_SoundSource), container.m_iVolume/1.25, playerId, left, right);
+					ComputeStereoLR(localEntity, GetHeadHeight(container.m_SoundSource), container.m_iVolume/1.25, playerId, behindIntensity, left, right);
 				else
-					ComputeStereoLR(localEntity, GetHeadHeight(container.m_SoundSource), container.m_iVolume, playerId, left, right);
+					ComputeStereoLR(localEntity, GetHeadHeight(container.m_SoundSource), container.m_iVolume, playerId, behindIntensity, left, right);
 			}
 			
 			
@@ -1191,6 +1200,19 @@ modded class SCR_VONController
 				else
 					container.m_fConnectionQuality = GetSignalStrength(vector.Distance(localEntity.GetOrigin(), container.m_vSenderLocation), container.m_iMaxDistance);
 			}
+			
+			if (!m_FactionManager)
+				m_FactionManager = SCR_FactionManager.Cast(GetGame().GetFactionManager());
+			
+			if (!m_BaseGamemode)
+				m_BaseGamemode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
+			
+			bool sameLanguage = true;
+			if (m_FactionManager)
+			{
+				if (m_FactionManager.GetPlayerFaction(m_PlayerController.GetPlayerId()) != m_FactionManager.GetPlayerFaction(container.m_iPlayerId) && m_BaseGamemode.IsBabbelEnabled())
+					sameLanguage = false;
+			}
 				
 			VONSave.StartObject(m_PlayerController.GetPlayersTeamspeakClientId(playerId).ToString());
 			VONSave.SetMaxDecimalPlaces(3);
@@ -1202,6 +1224,8 @@ modded class SCR_VONController
 			VONSave.WriteValue("ConnectionQuality", container.m_fConnectionQuality);
 			VONSave.WriteValue("FactionKey", container.m_sFactionKey);
 			VONSave.WriteValue("PlayerId", playerId);
+			VONSave.WriteValue("BehindIntensity", behindIntensity);
+			VONSave.WriteValue("SameLanguage", sameLanguage);
 			VONSave.EndObject();
 		}
 		VONSave.SaveToFile("$profile:/VONData.json");

@@ -35,6 +35,7 @@
 #include <Windows.h>
 #include <knownfolders.h>
 #include <limits.h>
+#include <malloc.h>
 #include <math.h>
 #include <shlobj.h>
 #include <stdarg.h>
@@ -100,6 +101,14 @@ typedef uint16_t anyID;
 #define RADIO_HP_Q 0.97f
 #define BASE_DISTORTION_LEVEL 0.43f
 #define MUFFLE_STAGES 3 /* 2nd-order LP x3 ≈ much steeper rolloff */
+/* Babbel effect (foreign language distortion) - IMPROVED for unintelligibility */
+#define BABBEL_MOD_FREQ 2000.0f   /* Higher = more scrambling (was 5200) */
+#define BABBEL_MOD_DEPTH 0.85f    /* Ring mod intensity 0-1 */
+#define BABBEL_LP1_FREQ 900.0f   /* Narrower bandpass = more muffled (was 1560) */
+#define BABBEL_LP2_FREQ 1800.0f   /* Narrower = removes clarity (was 2600) */
+#define BABBEL_LP_Q 0.6f          /* Higher Q = more resonant/hollow */
+#define BABBEL_VOLUME_BOOST 8.5f  /* Higher boost = more distortion (was 6.0) */
+#define BABBEL_CHAOS_AMOUNT 0.3f /* Adds random pitch variation */
 
 /* Logging (optional lightweight) */
 #ifndef CRF_LOGGING
@@ -368,6 +377,8 @@ typedef struct {
     float    connQ;
     char     txFaction[64];
     float    muffledDb;
+    float    behindIntensity;
+    int      sameLanguage;
     DWORD    lastUpdateTick;
 } VonEntry;
 
@@ -732,6 +743,21 @@ typedef struct {
     // NEW for smoothing
     float smoothedL;
     float smoothedR;
+
+    // Behind effect filters
+    Biquad behindLpL[2];
+    Biquad behindLpR[2];
+    Biquad behindLpM[2];
+    float  lastBehindFc;
+
+    // Babbel effect filters (for foreign language)
+    Biquad babbelLp1L;
+    Biquad babbelLp1R;
+    Biquad babbelLp1M;
+    Biquad babbelLp2L;
+    Biquad babbelLp2R;
+    Biquad babbelLp2M;
+    float  babbelPhase;
 } DirectState;
 
 
@@ -749,6 +775,16 @@ static inline float occlusion_db_to_fc(float occDbPos)
     return fc_hi + (fc_lo - fc_hi) * t; /* linear lerp */
 }
 
+/* Map behind intensity (0..1) to cutoff Hz for "behind head" effect.
+   0 = no effect (8kHz), 1 = fully behind (3kHz). */
+static inline float behind_intensity_to_fc(float intensity)
+{
+    float       t     = clampf(intensity, 0.0f, 1.0f);
+    const float fc_hi = 8000.0f;
+    const float fc_lo = 3000.0f;
+    return fc_hi + (fc_lo - fc_hi) * t; /* linear lerp */
+}
+
 static DirectState* get_direct_state(anyID id)
 {
     EnterCriticalSection(&g_directLock);
@@ -761,8 +797,8 @@ static DirectState* get_direct_state(anyID id)
     if (g_directCount < sizeof(g_directStates) / sizeof(g_directStates[0])) {
         DirectState* s = &g_directStates[g_directCount++];
         memset(s, 0, sizeof(*s));
-        s->id   = id;
-        s->have = 1;
+        s->id        = id;
+        s->have      = 1;
         s->smoothedL = 0.0f;
         s->smoothedR = 0.0f;
         for (int i = 0; i < MUFFLE_STAGES; ++i) {
@@ -771,6 +807,24 @@ static DirectState* get_direct_state(anyID id)
             biquad_calc_lowpass(&s->lpM[i], TS_SAMPLE_RATE, 8000.0f, 0.9f);
         }
         s->lastFc = 8000.0f;
+
+        // Initialize behind effect filters
+        for (int i = 0; i < 2; ++i) {
+            biquad_calc_lowpass(&s->behindLpL[i], TS_SAMPLE_RATE, 8000.0f, 0.7f);
+            biquad_calc_lowpass(&s->behindLpR[i], TS_SAMPLE_RATE, 8000.0f, 0.7f);
+            biquad_calc_lowpass(&s->behindLpM[i], TS_SAMPLE_RATE, 8000.0f, 0.7f);
+        }
+        s->lastBehindFc = 8000.0f;
+
+        // Initialize Babbel effect filters
+        biquad_calc_lowpass(&s->babbelLp1L, TS_SAMPLE_RATE, BABBEL_LP1_FREQ, BABBEL_LP_Q);
+        biquad_calc_lowpass(&s->babbelLp1R, TS_SAMPLE_RATE, BABBEL_LP1_FREQ, BABBEL_LP_Q);
+        biquad_calc_lowpass(&s->babbelLp1M, TS_SAMPLE_RATE, BABBEL_LP1_FREQ, BABBEL_LP_Q);
+        biquad_calc_lowpass(&s->babbelLp2L, TS_SAMPLE_RATE, BABBEL_LP2_FREQ, BABBEL_LP_Q);
+        biquad_calc_lowpass(&s->babbelLp2R, TS_SAMPLE_RATE, BABBEL_LP2_FREQ, BABBEL_LP_Q);
+        biquad_calc_lowpass(&s->babbelLp2M, TS_SAMPLE_RATE, BABBEL_LP2_FREQ, BABBEL_LP_Q);
+        s->babbelPhase = 0.0f;
+
         LeaveCriticalSection(&g_directLock);
         return s;
     }
@@ -782,6 +836,129 @@ static inline float smooth_gain(float current, float target)
 {
     const float alpha = 0.05f; // 0.0 = frozen, 1.0 = instant
     return current + alpha * (target - current);
+}
+
+/* Apply Babbel effect (foreign language distortion) - IMPROVED for maximum unintelligibility
+   Multiple techniques combined:
+   - Variable ring modulation (pitch scrambling with depth control)
+   - Narrower bandpass (removes speech clarity) 
+   - Chaotic pitch variation (random warble)
+   - Aggressive clipping (adds grit without sounding "robotic") */
+static inline void apply_babbel_effect(DirectState* ds, float* samples, int count, int isMono)
+{
+    const float modFreq  = BABBEL_MOD_FREQ;
+    const float phaseInc = TWO_PI_F * modFreq / TS_SAMPLE_RATE;
+    const float modDepth = BABBEL_MOD_DEPTH;
+    const float chaos    = BABBEL_CHAOS_AMOUNT;
+
+    if (isMono) {
+        /* Stage 1: Variable ring modulation with chaos - destroys pitch while keeping organic sound */
+        for (int i = 0; i < count; ++i) {
+            /* Add slight random variation to modulation frequency (wobble effect) */
+            float chaosVar = 1.0f + (chaos * 0.5f * sinf(ds->babbelPhase * 0.07f));
+            float mod      = cosf(ds->babbelPhase * 1.4f * chaosVar);
+
+            /* Mix original with modulated - depth control prevents "metallic robot" sound */
+            samples[i] = samples[i] * ((1.0f - modDepth) + modDepth * mod);
+
+            ds->babbelPhase += phaseInc;
+            if (ds->babbelPhase > TWO_PI_F)
+                ds->babbelPhase -= TWO_PI_F;
+        }
+
+        /* Stage 2: Aggressive first lowpass - removes speech clarity */
+        for (int i = 0; i < count; ++i)
+            samples[i] = biquad_tick(&ds->babbelLp1M, samples[i]);
+
+        /* Stage 3: Second lowpass - further muddles formants */
+        for (int i = 0; i < count; ++i)
+            samples[i] = biquad_tick(&ds->babbelLp2M, samples[i]);
+
+        /* Stage 4: Soft clipping with asymmetry - adds grit organically */
+        for (int i = 0; i < count; ++i) {
+            float boosted = samples[i] * BABBEL_VOLUME_BOOST;
+
+            /* Soft clipping curve - smoother than hard clip, less robotic */
+            if (boosted > 0.7f)
+                boosted = 0.7f + 0.3f * tanhf((boosted - 0.7f) * 3.0f);
+            else if (boosted < -0.7f)
+                boosted = -0.7f + 0.3f * tanhf((boosted + 0.7f) * 3.0f);
+
+            /* Add slight asymmetric distortion (mimics vocal tract non-linearity) */
+            boosted = boosted * (1.0f + 0.08f * boosted);
+
+            /* Final hard limit */
+            if (boosted > 1.0f)
+                boosted = 1.0f;
+            else if (boosted < -1.0f)
+                boosted = -1.0f;
+
+            samples[i] = boosted;
+        }
+
+    } else {
+        /* Stereo: Same aggressive processing */
+
+        /* Stage 1: Variable ring modulation with chaos */
+        for (int i = 0; i < count; i += 2) {
+            float chaosVar = 1.0f + (chaos * 0.5f * sinf(ds->babbelPhase * 0.07f));
+            float mod      = cosf(ds->babbelPhase * 1.4f * chaosVar);
+
+            samples[i + 0] = samples[i + 0] * ((1.0f - modDepth) + modDepth * mod);
+            samples[i + 1] = samples[i + 1] * ((1.0f - modDepth) + modDepth * mod);
+
+            ds->babbelPhase += phaseInc;
+            if (ds->babbelPhase > TWO_PI_F)
+                ds->babbelPhase -= TWO_PI_F;
+        }
+
+        /* Stage 2: First lowpass */
+        for (int i = 0; i < count; i += 2) {
+            samples[i + 0] = biquad_tick(&ds->babbelLp1L, samples[i + 0]);
+            samples[i + 1] = biquad_tick(&ds->babbelLp1R, samples[i + 1]);
+        }
+
+        /* Stage 3: Second lowpass */
+        for (int i = 0; i < count; i += 2) {
+            samples[i + 0] = biquad_tick(&ds->babbelLp2L, samples[i + 0]);
+            samples[i + 1] = biquad_tick(&ds->babbelLp2R, samples[i + 1]);
+        }
+
+        /* Stage 4: Soft clipping with asymmetry */
+        for (int i = 0; i < count; i += 2) {
+            float L = samples[i + 0] * BABBEL_VOLUME_BOOST;
+            float R = samples[i + 1] * BABBEL_VOLUME_BOOST;
+
+            /* Soft clipping curve */
+            if (L > 0.7f)
+                L = 0.7f + 0.3f * tanhf((L - 0.7f) * 3.0f);
+            else if (L < -0.7f)
+                L = -0.7f + 0.3f * tanhf((L + 0.7f) * 3.0f);
+
+            if (R > 0.7f)
+                R = 0.7f + 0.3f * tanhf((R - 0.7f) * 3.0f);
+            else if (R < -0.7f)
+                R = -0.7f + 0.3f * tanhf((R + 0.7f) * 3.0f);
+
+            /* Asymmetric distortion */
+            L = L * (1.0f + 0.08f * L);
+            R = R * (1.0f + 0.08f * R);
+
+            /* Final hard limit */
+            if (L > 1.0f)
+                L = 1.0f;
+            else if (L < -1.0f)
+                L = -1.0f;
+
+            if (R > 1.0f)
+                R = 1.0f;
+            else if (R < -1.0f)
+                R = -1.0f;
+
+            samples[i + 0] = L;
+            samples[i + 1] = R;
+        }
+    }
 }
 
 
@@ -851,6 +1028,16 @@ static int load_von_into(VonSnapshot* dst)
         v = cJSON_GetObjectItem(it, "MuffledDecibels");
         if (cJSON_IsNumber(v))
             e.muffledDb = (float)v->valuedouble;
+
+        v = cJSON_GetObjectItem(it, "BehindIntensity");
+        if (cJSON_IsNumber(v))
+            e.behindIntensity = clampf((float)v->valuedouble, 0.0f, 1.0f);
+
+        v = cJSON_GetObjectItem(it, "SameLanguage");
+        if (cJSON_IsBool(v))
+            e.sameLanguage = v->valueint;
+        else
+            e.sameLanguage = 1; /* default to same language if not specified */
 
         e.lastUpdateTick = GetTickCount();
 
@@ -1453,6 +1640,90 @@ static void unmute_all_clients(uint64 sch)
     ts3Functions.freeMemory(clients);
 }
 
+static void update_direct_states_in_worker(void)
+{
+    const VonSnapshot* snap = get_active_von();
+    if (!snap || !snap->loaded)
+        return;
+
+    for (size_t i = 0; i < snap->count; ++i) {
+        const VonEntry* e = &snap->entries[i];
+
+        /* Skip radio-only entries */
+        if (e->type == VON_RADIO) {
+            /* Check if this should fallback to direct */
+            const RadioSnapshot* rSnap   = get_active_radio();
+            int                  matched = 0;
+
+            if (rSnap && rSnap->loaded) {
+                for (size_t j = 0; j < rSnap->count; ++j) {
+                    const RadioLocal* r = &rSnap->list[j];
+                    if (strcmp(r->freq, e->txFreq) != 0)
+                        continue;
+                    if (!(r->timeDev == INT_MIN || e->txTimeDev == INT_MIN || r->timeDev == e->txTimeDev))
+                        continue;
+                    int rf = (r->faction[0] && strcmp(r->faction, "0") != 0);
+                    int vf = (e->txFaction[0] && strcmp(e->txFaction, "0") != 0);
+                    if (rf && vf && strcmp(r->faction, e->txFaction) != 0)
+                        continue;
+                    matched = 1;
+                    break;
+                }
+            }
+
+            /* If matched, skip (pure radio, no direct processing needed) */
+            if (matched)
+                continue;
+        }
+
+        /* Get or create DirectState for this client */
+        DirectState* ds = get_direct_state(e->id);
+        if (!ds)
+            continue;
+
+        /* Calculate target gains */
+        const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
+        const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
+        float       avg       = 0.5f * (lG + rG);
+        float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
+
+        const float lTarget = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+        const float rTarget = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+
+        /* Smooth gain updates (happens every worker tick, not just when audio flows) */
+        ds->smoothedL = smooth_gain(ds->smoothedL, lTarget);
+        ds->smoothedR = smooth_gain(ds->smoothedR, rTarget);
+
+        /* Update muffle filters if needed */
+        const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
+        if (occDb > 0.1f) {
+            float fc = occlusion_db_to_fc(occDb);
+            if (fabsf(fc - ds->lastFc) > 10.0f) {
+                for (int k = 0; k < MUFFLE_STAGES; ++k) {
+                    biquad_update_lowpass(&ds->lpL[k], TS_SAMPLE_RATE, fc, 0.9f);
+                    biquad_update_lowpass(&ds->lpR[k], TS_SAMPLE_RATE, fc, 0.9f);
+                    biquad_update_lowpass(&ds->lpM[k], TS_SAMPLE_RATE, fc, 0.9f);
+                }
+                ds->lastFc = fc;
+            }
+        }
+
+        /* Update behind filters if needed */
+        const float behindInt = clampf(e->behindIntensity, 0.0f, 1.0f);
+        if (behindInt > 0.05f) {
+            float behindFc = behind_intensity_to_fc(behindInt);
+            if (fabsf(behindFc - ds->lastBehindFc) > 10.0f) {
+                for (int k = 0; k < 2; ++k) {
+                    biquad_update_lowpass(&ds->behindLpL[k], TS_SAMPLE_RATE, behindFc, 0.7f);
+                    biquad_update_lowpass(&ds->behindLpR[k], TS_SAMPLE_RATE, behindFc, 0.7f);
+                    biquad_update_lowpass(&ds->behindLpM[k], TS_SAMPLE_RATE, behindFc, 0.7f);
+                }
+                ds->lastBehindFc = behindFc;
+            }
+        }
+    }
+}
+
 static DWORD WINAPI worker_main(LPVOID param)
 {
     (void)param;
@@ -1562,6 +1833,9 @@ static DWORD WINAPI worker_main(LPVOID param)
                 }
             }
 
+            /* NEW: Update all DirectStates continuously */
+            update_direct_states_in_worker();
+
             if (sch) {
                 if (g_SD_inGame)
                     apply_proximity_muting(sch);
@@ -1623,7 +1897,7 @@ PL_EXPORT const char* ts3plugin_name()
 }
 PL_EXPORT const char* ts3plugin_version()
 {
-    return "2.0.0";
+    return "2.0.1";
 }
 PL_EXPORT int ts3plugin_apiVersion()
 {
@@ -1837,7 +2111,6 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
         return;
     }
 
-
     /* ----------------------------- RADIO talkers ----------------------------- */
     if (e->type == VON_RADIO) {
         float                vol01    = 0.0f;
@@ -1956,58 +2229,242 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
             }
             return;
         } else {
-            /* ------------------ DIRECT fallback ------------------ */
-            const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
-            const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
-            float       avg       = 0.5f * (lG + rG);
-            float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
-
-            const float lTarget = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-            const float rTarget = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-
+            /* ------------------ DIRECT fallback (simplified - state updated in worker) ------------------ */
             DirectState* ds = get_direct_state(clientID);
-            ds->smoothedL   = smooth_gain(ds->smoothedL, lTarget);
-            ds->smoothedR   = smooth_gain(ds->smoothedR, rTarget);
 
+            /* Use pre-smoothed gains from worker thread */
+            const float lGain = ds->smoothedL;
+            const float rGain = ds->smoothedR;
+
+            /* Filters are already updated in worker, just check if we need to apply them */
             const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
             const int   doMuf = (occDb > 0.1f) ? 1 : 0;
 
-            float fc = 8000.0f;
-            if (doMuf) {
-                fc = occlusion_db_to_fc(occDb);
-                if (fabsf(fc - ds->lastFc) > 10.0f) {
-                    for (int i = 0; i < MUFFLE_STAGES; ++i) {
-                        biquad_update_lowpass(&ds->lpL[i], TS_SAMPLE_RATE, fc, 0.9f);
-                        biquad_update_lowpass(&ds->lpR[i], TS_SAMPLE_RATE, fc, 0.9f);
-                        biquad_update_lowpass(&ds->lpM[i], TS_SAMPLE_RATE, fc, 0.9f);
-                    }
-                    ds->lastFc = fc;
-                }
+            const float behindInt   = clampf(e->behindIntensity, 0.0f, 1.0f);
+            const int   doBehind    = (behindInt > 0.05f) ? 1 : 0;
+            float       behindAtten = 1.0f;
+            if (doBehind) {
+                behindAtten = 1.0f - (behindInt * 0.29f);
             }
 
             if (channels <= 1) {
-                float mSmoothed = 0.5f * (ds->smoothedL + ds->smoothedR);
+                float mGain = 0.5f * (lGain + rGain);
+
+                if (!e->sameLanguage) {
+                    float* floatBuf = (float*)alloca(sampleCount * sizeof(float));
+                    for (int i = 0; i < sampleCount; ++i) {
+                        float x = (float)samples[i] / 32768.0f;
+                        x *= mGain;
+                        floatBuf[i] = x;
+                    }
+                    apply_babbel_effect(ds, floatBuf, sampleCount, 1);
+                    for (int i = 0; i < sampleCount; ++i) {
+                        float x = floatBuf[i];
+                        if (doMuf) {
+                            for (int s = 0; s < MUFFLE_STAGES; ++s)
+                                x = biquad_tick(&ds->lpM[s], x);
+                        }
+                        if (doBehind) {
+                            for (int s = 0; s < 2; ++s)
+                                x = biquad_tick(&ds->behindLpM[s], x);
+                            x *= behindAtten;
+                        }
+                        samples[i] = clamp_i16(x * 32767.0f);
+                    }
+                } else {
+                    for (int i = 0; i < sampleCount; ++i) {
+                        float x = (float)samples[i] / 32768.0f;
+                        x *= mGain;
+                        if (doMuf) {
+                            for (int s = 0; s < MUFFLE_STAGES; ++s)
+                                x = biquad_tick(&ds->lpM[s], x);
+                        }
+                        if (doBehind) {
+                            for (int s = 0; s < 2; ++s)
+                                x = biquad_tick(&ds->behindLpM[s], x);
+                            x *= behindAtten;
+                        }
+                        samples[i] = clamp_i16(x * 32767.0f);
+                    }
+                }
+            } else {
+                if (!e->sameLanguage) {
+                    float* floatBuf = (float*)alloca(sampleCount * channels * sizeof(float));
+                    for (int i = 0; i < sampleCount; ++i) {
+                        const int idx       = i * channels;
+                        floatBuf[i * 2 + 0] = ((float)samples[idx + 0] / 32768.0f) * lGain;
+                        floatBuf[i * 2 + 1] = ((float)samples[idx + 1] / 32768.0f) * rGain;
+                    }
+                    apply_babbel_effect(ds, floatBuf, sampleCount * 2, 0);
+                    for (int i = 0; i < sampleCount; ++i) {
+                        float L = floatBuf[i * 2 + 0];
+                        float R = floatBuf[i * 2 + 1];
+                        if (doMuf) {
+                            for (int s = 0; s < MUFFLE_STAGES; ++s) {
+                                L = biquad_tick(&ds->lpL[s], L);
+                                R = biquad_tick(&ds->lpR[s], R);
+                            }
+                        }
+                        if (doBehind) {
+                            for (int s = 0; s < 2; ++s) {
+                                L = biquad_tick(&ds->behindLpL[s], L);
+                                R = biquad_tick(&ds->behindLpR[s], R);
+                            }
+                            L *= behindAtten;
+                            R *= behindAtten;
+                        }
+                        const int idx        = i * channels;
+                        samples[idx + 0]     = clamp_i16(L * 32767.0f);
+                        samples[idx + 1]     = clamp_i16(R * 32767.0f);
+                        const short monoFill = (short)((samples[idx + 0] + samples[idx + 1]) / 2);
+                        for (int ch = 2; ch < channels; ++ch)
+                            samples[idx + ch] = monoFill;
+                    }
+                } else {
+                    for (int i = 0; i < sampleCount; ++i) {
+                        const int idx = i * channels;
+                        float     L   = (float)samples[idx + 0] / 32768.0f;
+                        float     R   = (float)samples[idx + 1] / 32768.0f;
+                        L *= lGain;
+                        R *= rGain;
+                        if (doMuf) {
+                            for (int s = 0; s < MUFFLE_STAGES; ++s) {
+                                L = biquad_tick(&ds->lpL[s], L);
+                                R = biquad_tick(&ds->lpR[s], R);
+                            }
+                        }
+                        if (doBehind) {
+                            for (int s = 0; s < 2; ++s) {
+                                L = biquad_tick(&ds->behindLpL[s], L);
+                                R = biquad_tick(&ds->behindLpR[s], R);
+                            }
+                            L *= behindAtten;
+                            R *= behindAtten;
+                        }
+                        samples[idx + 0]     = clamp_i16(L * 32767.0f);
+                        samples[idx + 1]     = clamp_i16(R * 32767.0f);
+                        const short monoFill = (short)((samples[idx + 0] + samples[idx + 1]) / 2);
+                        for (int ch = 2; ch < channels; ++ch)
+                            samples[idx + ch] = monoFill;
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    /* ----------------------------- DIRECT talkers (simplified - state updated in worker) ----------------------------- */
+    {
+        DirectState* ds = get_direct_state(clientID);
+
+        /* Use pre-smoothed gains from worker thread */
+        const float lGain = ds->smoothedL;
+        const float rGain = ds->smoothedR;
+
+        /* Filters are already updated in worker, just check if we need to apply them */
+        const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
+        const int   doMuf = (occDb > 0.1f) ? 1 : 0;
+
+        const float behindInt   = clampf(e->behindIntensity, 0.0f, 1.0f);
+        const int   doBehind    = (behindInt > 0.05f) ? 1 : 0;
+        float       behindAtten = 1.0f;
+        if (doBehind) {
+            behindAtten = 1.0f - (behindInt * 0.29f);
+        }
+
+        if (channels <= 1) {
+            float mGain = 0.5f * (lGain + rGain);
+
+            if (!e->sameLanguage) {
+                float* floatBuf = (float*)alloca(sampleCount * sizeof(float));
                 for (int i = 0; i < sampleCount; ++i) {
                     float x = (float)samples[i] / 32768.0f;
-                    x *= mSmoothed;
+                    x *= mGain;
+                    floatBuf[i] = x;
+                }
+                apply_babbel_effect(ds, floatBuf, sampleCount, 1);
+                for (int i = 0; i < sampleCount; ++i) {
+                    float x = floatBuf[i];
                     if (doMuf) {
                         for (int s = 0; s < MUFFLE_STAGES; ++s)
                             x = biquad_tick(&ds->lpM[s], x);
                     }
+                    if (doBehind) {
+                        for (int s = 0; s < 2; ++s)
+                            x = biquad_tick(&ds->behindLpM[s], x);
+                        x *= behindAtten;
+                    }
                     samples[i] = clamp_i16(x * 32767.0f);
+                }
+            } else {
+                for (int i = 0; i < sampleCount; ++i) {
+                    float x = (float)samples[i] / 32768.0f;
+                    x *= mGain;
+                    if (doMuf) {
+                        for (int s = 0; s < MUFFLE_STAGES; ++s)
+                            x = biquad_tick(&ds->lpM[s], x);
+                    }
+                    if (doBehind) {
+                        for (int s = 0; s < 2; ++s)
+                            x = biquad_tick(&ds->behindLpM[s], x);
+                        x *= behindAtten;
+                    }
+                    samples[i] = clamp_i16(x * 32767.0f);
+                }
+            }
+        } else {
+            if (!e->sameLanguage) {
+                float* floatBuf = (float*)alloca(sampleCount * channels * sizeof(float));
+                for (int i = 0; i < sampleCount; ++i) {
+                    const int idx       = i * channels;
+                    floatBuf[i * 2 + 0] = ((float)samples[idx + 0] / 32768.0f) * lGain;
+                    floatBuf[i * 2 + 1] = ((float)samples[idx + 1] / 32768.0f) * rGain;
+                }
+                apply_babbel_effect(ds, floatBuf, sampleCount * 2, 0);
+                for (int i = 0; i < sampleCount; ++i) {
+                    float L = floatBuf[i * 2 + 0];
+                    float R = floatBuf[i * 2 + 1];
+                    if (doMuf) {
+                        for (int s = 0; s < MUFFLE_STAGES; ++s) {
+                            L = biquad_tick(&ds->lpL[s], L);
+                            R = biquad_tick(&ds->lpR[s], R);
+                        }
+                    }
+                    if (doBehind) {
+                        for (int s = 0; s < 2; ++s) {
+                            L = biquad_tick(&ds->behindLpL[s], L);
+                            R = biquad_tick(&ds->behindLpR[s], R);
+                        }
+                        L *= behindAtten;
+                        R *= behindAtten;
+                    }
+                    const int idx        = i * channels;
+                    samples[idx + 0]     = clamp_i16(L * 32767.0f);
+                    samples[idx + 1]     = clamp_i16(R * 32767.0f);
+                    const short monoFill = (short)((samples[idx + 0] + samples[idx + 1]) / 2);
+                    for (int ch = 2; ch < channels; ++ch)
+                        samples[idx + ch] = monoFill;
                 }
             } else {
                 for (int i = 0; i < sampleCount; ++i) {
                     const int idx = i * channels;
                     float     L   = (float)samples[idx + 0] / 32768.0f;
                     float     R   = (float)samples[idx + 1] / 32768.0f;
-                    L *= ds->smoothedL;
-                    R *= ds->smoothedR;
+                    L *= lGain;
+                    R *= rGain;
                     if (doMuf) {
                         for (int s = 0; s < MUFFLE_STAGES; ++s) {
                             L = biquad_tick(&ds->lpL[s], L);
                             R = biquad_tick(&ds->lpR[s], R);
                         }
+                    }
+                    if (doBehind) {
+                        for (int s = 0; s < 2; ++s) {
+                            L = biquad_tick(&ds->behindLpL[s], L);
+                            R = biquad_tick(&ds->behindLpR[s], R);
+                        }
+                        L *= behindAtten;
+                        R *= behindAtten;
                     }
                     samples[idx + 0]     = clamp_i16(L * 32767.0f);
                     samples[idx + 1]     = clamp_i16(R * 32767.0f);
@@ -2015,70 +2472,6 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
                     for (int ch = 2; ch < channels; ++ch)
                         samples[idx + ch] = monoFill;
                 }
-            }
-            return;
-        }
-    }
-
-    /* ----------------------------- DIRECT talkers ----------------------------- */
-    {
-        const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
-        const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
-        float       avg       = 0.5f * (lG + rG);
-        float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
-
-        const float lTarget = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-        const float rTarget = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-
-        DirectState* ds = get_direct_state(clientID);
-        ds->smoothedL   = smooth_gain(ds->smoothedL, lTarget);
-        ds->smoothedR   = smooth_gain(ds->smoothedR, rTarget);
-
-        const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
-        const int   doMuf = (occDb > 0.1f) ? 1 : 0;
-
-        float fc = 8000.0f;
-        if (doMuf) {
-            fc = occlusion_db_to_fc(occDb);
-            if (fabsf(fc - ds->lastFc) > 10.0f) {
-                for (int i = 0; i < MUFFLE_STAGES; ++i) {
-                    biquad_update_lowpass(&ds->lpL[i], TS_SAMPLE_RATE, fc, 0.9f);
-                    biquad_update_lowpass(&ds->lpR[i], TS_SAMPLE_RATE, fc, 0.9f);
-                    biquad_update_lowpass(&ds->lpM[i], TS_SAMPLE_RATE, fc, 0.9f);
-                }
-                ds->lastFc = fc;
-            }
-        }
-
-        if (channels <= 1) {
-            float mSmoothed = 0.5f * (ds->smoothedL + ds->smoothedR);
-            for (int i = 0; i < sampleCount; ++i) {
-                float x = (float)samples[i] / 32768.0f;
-                x *= mSmoothed;
-                if (doMuf) {
-                    for (int s = 0; s < MUFFLE_STAGES; ++s)
-                        x = biquad_tick(&ds->lpM[s], x);
-                }
-                samples[i] = clamp_i16(x * 32767.0f);
-            }
-        } else {
-            for (int i = 0; i < sampleCount; ++i) {
-                const int idx = i * channels;
-                float     L   = (float)samples[idx + 0] / 32768.0f;
-                float     R   = (float)samples[idx + 1] / 32768.0f;
-                L *= ds->smoothedL;
-                R *= ds->smoothedR;
-                if (doMuf) {
-                    for (int s = 0; s < MUFFLE_STAGES; ++s) {
-                        L = biquad_tick(&ds->lpL[s], L);
-                        R = biquad_tick(&ds->lpR[s], R);
-                    }
-                }
-                samples[idx + 0]     = clamp_i16(L * 32767.0f);
-                samples[idx + 1]     = clamp_i16(R * 32767.0f);
-                const short monoFill = (short)((samples[idx + 0] + samples[idx + 1]) / 2);
-                for (int ch = 2; ch < channels; ++ch)
-                    samples[idx + ch] = monoFill;
             }
         }
     }
