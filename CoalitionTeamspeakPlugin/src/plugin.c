@@ -130,7 +130,6 @@ static void logf(const char* fmt, ...)
 #endif
 
 #define PATH_SEP "\\"
-#define PL_EXPORT __declspec(dllexport)
 /* Fixed-size processing chunk for radio path */
 #define RADIO_PROCESS_CHUNK 1024
 
@@ -1885,7 +1884,7 @@ static int wcharToUtf8(const wchar_t* str, char** result)
     }
     return 0;
 }
-PL_EXPORT const char* ts3plugin_name()
+PLUGINS_EXPORTDLL const char* ts3plugin_name()
 {
     static char* result = NULL;
     if (!result) {
@@ -1895,28 +1894,28 @@ PL_EXPORT const char* ts3plugin_name()
     }
     return result;
 }
-PL_EXPORT const char* ts3plugin_version()
+PLUGINS_EXPORTDLL const char* ts3plugin_version()
 {
     return "2.0.1";
 }
-PL_EXPORT int ts3plugin_apiVersion()
+PLUGINS_EXPORTDLL int ts3plugin_apiVersion()
 {
     return PLUGIN_API_VERSION;
 }
-PL_EXPORT const char* ts3plugin_author()
+PLUGINS_EXPORTDLL const char* ts3plugin_author()
 {
     return "Salami";
 }
-PL_EXPORT const char* ts3plugin_description()
+PLUGINS_EXPORTDLL const char* ts3plugin_description()
 {
     return "A tool for Arma Reforger to communicate with Teamspeak - includes proximity-based automatic muting";
 }
-PL_EXPORT void ts3plugin_setFunctionPointers(const struct TS3Functions funcs)
+PLUGINS_EXPORTDLL void ts3plugin_setFunctionPointers(const struct TS3Functions funcs)
 {
     ts3Functions = funcs;
 }
 
-PL_EXPORT int ts3plugin_init()
+PLUGINS_EXPORTDLL int ts3plugin_init()
 {
     InitializeCriticalSection(&g_radioLock);
     InitializeCriticalSection(&g_directLock); /* NEW */
@@ -1980,7 +1979,7 @@ PL_EXPORT int ts3plugin_init()
     logf("[CRF] Init complete\n");
     return 0;
 }
-PL_EXPORT void ts3plugin_shutdown()
+PLUGINS_EXPORTDLL void ts3plugin_shutdown()
 {
     if (ts3Functions.getCurrentServerConnectionHandlerID()) {
         reset_mic_state(ts3Functions.getCurrentServerConnectionHandlerID());
@@ -2021,7 +2020,7 @@ PL_EXPORT void ts3plugin_shutdown()
 /* ---------------------------------------------------------------------------
    Events
 --------------------------------------------------------------------------- */
-PL_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 sch, int newStatus, unsigned int errorNumber)
+PLUGINS_EXPORTDLL void ts3plugin_onConnectStatusChangeEvent(uint64 sch, int newStatus, unsigned int errorNumber)
 {
     (void)errorNumber;
     if (newStatus == STATUS_CONNECTION_ESTABLISHED) {
@@ -2041,11 +2040,11 @@ PL_EXPORT void ts3plugin_onConnectStatusChangeEvent(uint64 sch, int newStatus, u
         logf("[CRF] Connection established\n");
     }
 }
-PL_EXPORT void ts3plugin_currentServerConnectionChanged(uint64 sch)
+PLUGINS_EXPORTDLL void ts3plugin_currentServerConnectionChanged(uint64 sch)
 {
     g_LastCount  = 0;
 }
-PL_EXPORT void ts3plugin_onClientMoveEvent(uint64 sch, anyID clientID, uint64 oldCh, uint64 newCh, int visibility, const char* moveMessage)
+PLUGINS_EXPORTDLL void ts3plugin_onClientMoveEvent(uint64 sch, anyID clientID, uint64 oldCh, uint64 newCh, int visibility, const char* moveMessage)
 {
     (void)oldCh;
     (void)newCh;
@@ -2088,7 +2087,7 @@ static inline void silence_samples(short* samples, int sampleCount, int channels
 /* ---------------------------------------------------------------------------
    Audio (pure DSP)
 --------------------------------------------------------------------------- */
-PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clientID, short* samples, int sampleCount, int channels, const unsigned int* channelSpeakerArray, unsigned int* channelFillMask)
+PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clientID, short* samples, int sampleCount, int channels, const unsigned int* channelSpeakerArray, unsigned int* channelFillMask)
 {
     (void)channelSpeakerArray;
     (void)channelFillMask;
@@ -2480,7 +2479,7 @@ PL_EXPORT void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, anyID clien
 /* ---------------------------------------------------------------------------
    Mixed playback (we no longer touch per-client volume here)
 --------------------------------------------------------------------------- */
-PL_EXPORT void ts3plugin_onEditMixedPlaybackVoiceDataEvent(uint64 sch, short* samples, int sampleCount, int channels, const unsigned int* channelSpeakerArray, unsigned int* channelFillMask)
+PLUGINS_EXPORTDLL void ts3plugin_onEditMixedPlaybackVoiceDataEvent(uint64 sch, short* samples, int sampleCount, int channels, const unsigned int* channelSpeakerArray, unsigned int* channelFillMask)
 {
     (void)sch;
     (void)samples;
