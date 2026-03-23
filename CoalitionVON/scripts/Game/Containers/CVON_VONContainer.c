@@ -54,8 +54,17 @@ class CVON_VONContainer
 	
 	//Is there any muffling
 	int m_iLoweredDecibles;
-	
-	static bool Extract(CVON_VONContainer instance, ScriptCtx ctx, SSnapSerializerBase snapshot)
+
+	// Last values written to VONData.json.
+	// WriteJSON compares current computed values against these to skip
+	// disk writes on frames where nothing has actually changed.
+	float m_fCachedLeft 	= -999;
+	float m_fCachedRight 	= -999;
+	float m_fCachedBehind 	= -999;
+	int   m_iCachedDecibels = -999;
+	float m_fCachedConnQ 	= -999;
+	bool  m_bCachedSameLang = true;
+	string m_sCachedFreq    = "__unset__";
 	{	
 		snapshot.SerializeBytes(instance.m_eVonType, 4);
 		snapshot.SerializeBytes(instance.m_SenderRplId, 4);

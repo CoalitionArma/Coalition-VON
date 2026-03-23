@@ -527,7 +527,11 @@ modded class SCR_VONController
 	float m_fWriteTeamspeakClientIdCooldown = 0;
 	ref array<int> m_PlayerIdTemp = {};
 	float m_fHeadCacheBuffer = 0;
-	float m_fVONSaveBuffer = 0;
+	// VONServerData.json only needs to be checked at ~1 s; reading it every 50 ms
+	// was 20 unnecessary file reads per second just to detect a TSClientID update.
+	float m_fServerDataBuffer = 0;
+	// Dirty-flag tracking: last value of IsTransmitting written to VONData.json.
+	bool m_bLastWrittenTransmitting = false;
 	override void EOnFixedFrame(IEntity owner, float timeSlice)
 	{
 		super.EOnFixedFrame(owner, timeSlice);
@@ -694,13 +698,12 @@ modded class SCR_VONController
 			m_bHasBroadcasted = true;
 		}
 		
-		//Our plugin only checks every 50ms
-		if (m_fVONSaveBuffer >= 0.05)
-		{
-			WriteJSON();
-			m_fVONSaveBuffer = 0;
-		}
-		else m_fVONSaveBuffer += timeSlice;
+		// WriteJSON runs every tick; the dirty flag inside skips SaveToFile when nothing changed.
+		m_fServerDataBuffer += timeSlice;
+		bool checkServerData = (m_fServerDataBuffer >= 1.0);
+		if (checkServerData)
+			m_fServerDataBuffer = 0;
+		WriteJSON(checkServerData);
 	}
 	
 	//Thank god for CHATGPT
@@ -1093,49 +1096,17 @@ modded class SCR_VONController
 	//Teamspeak reads the JSON, parses the data and compares it using the clientId to see if they should hear this baffoon ->
 	//The entry is removed from the local array and is no longer written to the JSON, there for teamspeak just mutes that client as he has no data in the JSON.
 	//==========================================================================================================================================================================
-	void WriteJSON()
+	// checkServerData: when false, skip the VONServerData.json read entirely.
+	// Called every 50ms but checkServerData is only true once per second to avoid
+	// opening and parsing a file 20 times per second for data that rarely changes.
+	void WriteJSON(bool checkServerData = true)
 	{
 		if (!GetGame().GetPlayerController())
 			return;
-		SCR_JsonLoadContext VONLoad = new SCR_JsonLoadContext();
-		if (!VONLoad.LoadFromFile("$profile:/VONServerData.json"))
+		if (checkServerData)
 		{
-			SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
-			VONServerData.StartObject("ServerData");
-			VONServerData.SetMaxDecimalPlaces(1);
-			VONServerData.WriteValue("InGame", true);
-			VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(m_PlayerController.GetPlayerId()));
-			VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
-			VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
-			VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
-			VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
-			VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
-			VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
-			VONServerData.EndObject();
-			VONServerData.SaveToFile("$profile:/VONServerData.json");
-		}
-		else
-		{
-			string ChannelName;
-			string ChannelPassword;
-			int TSClientId = 0;
-			bool InGame;
-			string gameName;
-			VONLoad.StartObject("ServerData");
-			VONLoad.ReadValue("InGame", InGame);
-			VONLoad.ReadValue("VONChannelName", ChannelName);
-			VONLoad.ReadValue("VONChannelPassword", ChannelPassword);
-			VONLoad.ReadValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
-			VONLoad.ReadValue("TSClientID", TSClientId);
-			VONLoad.ReadValue("InGameName", gameName);
-			if (m_PlayerController.GetTeamspeakClientId() != TSClientId && m_fWriteTeamspeakClientIdCooldown <= 0)
-			{
-				m_fWriteTeamspeakClientIdCooldown = 1;
-				m_PlayerController.SetTeamspeakClientId(TSClientId);
-			}
-				
-			VONLoad.EndObject();
-			if (gameName == "" || ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
+			SCR_JsonLoadContext VONLoad = new SCR_JsonLoadContext();
+			if (!VONLoad.LoadFromFile("$profile:/VONServerData.json"))
 			{
 				SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
 				VONServerData.StartObject("ServerData");
@@ -1150,6 +1121,44 @@ modded class SCR_VONController
 				VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
 				VONServerData.EndObject();
 				VONServerData.SaveToFile("$profile:/VONServerData.json");
+			}
+			else
+			{
+				string ChannelName;
+				string ChannelPassword;
+				int TSClientId = 0;
+				bool InGame;
+				string gameName;
+				VONLoad.StartObject("ServerData");
+				VONLoad.ReadValue("InGame", InGame);
+				VONLoad.ReadValue("VONChannelName", ChannelName);
+				VONLoad.ReadValue("VONChannelPassword", ChannelPassword);
+				VONLoad.ReadValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
+				VONLoad.ReadValue("TSClientID", TSClientId);
+				VONLoad.ReadValue("InGameName", gameName);
+				if (m_PlayerController.GetTeamspeakClientId() != TSClientId && m_fWriteTeamspeakClientIdCooldown <= 0)
+				{
+					m_fWriteTeamspeakClientIdCooldown = 1;
+					m_PlayerController.SetTeamspeakClientId(TSClientId);
+				}
+				
+				VONLoad.EndObject();
+				if (gameName == "" || ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
+				{
+					SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
+					VONServerData.StartObject("ServerData");
+					VONServerData.SetMaxDecimalPlaces(1);
+					VONServerData.WriteValue("InGame", true);
+					VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(m_PlayerController.GetPlayerId()));
+					VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
+					VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
+					VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
+					VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
+					VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
+					VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
+					VONServerData.EndObject();
+					VONServerData.SaveToFile("$profile:/VONServerData.json");
+				}
 			}
 		}
 		#ifdef ENABLE_DIAG
@@ -1172,6 +1181,9 @@ modded class SCR_VONController
 		IEntity localEntity = m_Camera;
 		if (!localEntity)
 			return;
+		// Dirty flag: if nothing changed since the last write, skip SaveToFile entirely.
+		// JSON serialization still happens in memory (cheap); the disk write is what we avoid.
+		bool dirty = (m_bIsBroadcasting != m_bLastWrittenTransmitting);
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
 			IEntity soundSource;
@@ -1240,6 +1252,20 @@ modded class SCR_VONController
 				if (m_FactionManager.GetPlayerFaction(m_PlayerController.GetPlayerId()) != m_FactionManager.GetPlayerFaction(container.m_iPlayerId) && m_BaseGamemode.IsBabbelEnabled())
 					sameLanguage = false;
 			}
+
+			// Check if this entry differs enough from what was last written (epsilon ~0.5%).
+			const float EPS = 0.005;
+			if (!dirty)
+			{
+				if (Math.AbsFloat(left  - container.m_fCachedLeft)   > EPS ||
+					Math.AbsFloat(right - container.m_fCachedRight)  > EPS ||
+					Math.AbsFloat(behindIntensity - container.m_fCachedBehind) > EPS ||
+					Math.AbsFloat(container.m_fConnectionQuality - container.m_fCachedConnQ) > EPS ||
+					loweredDecibels  != container.m_iCachedDecibels ||
+					sameLanguage     != container.m_bCachedSameLang ||
+					frequency        != container.m_sCachedFreq)
+					dirty = true;
+			}
 				
 			VONSave.StartObject(m_PlayerController.GetPlayersTeamspeakClientId(playerId).ToString());
 			VONSave.SetMaxDecimalPlaces(3);
@@ -1254,8 +1280,21 @@ modded class SCR_VONController
 			VONSave.WriteValue("BehindIntensity", behindIntensity);
 			VONSave.WriteValue("SameLanguage", sameLanguage);
 			VONSave.EndObject();
+
+			// Update the per-entry cache so we can detect the next change.
+			container.m_fCachedLeft    = left;
+			container.m_fCachedRight   = right;
+			container.m_fCachedBehind  = behindIntensity;
+			container.m_iCachedDecibels = loweredDecibels;
+			container.m_fCachedConnQ   = container.m_fConnectionQuality;
+			container.m_bCachedSameLang = sameLanguage;
+			container.m_sCachedFreq    = frequency;
 		}
-		VONSave.SaveToFile("$profile:/VONData.json");
+		if (dirty)
+		{
+			VONSave.SaveToFile("$profile:/VONData.json");
+			m_bLastWrittenTransmitting = m_bIsBroadcasting;
+		}
 	}
 	
 	
