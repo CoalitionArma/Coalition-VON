@@ -600,6 +600,7 @@ modded class SCR_VONController
 			else
 				container.m_fDistanceToSender = -1;
 		}
+		} // end foreach m_aLocalEntries
 		
 		foreach (int playerId: m_PlayerIdTemp)
 		{
@@ -712,7 +713,7 @@ modded class SCR_VONController
 	// Geometry only: pan + rear shadow + elevation + bleed.
 	// Multiply the returned L/R by your own plugin volume afterward.
 	//==========================================================================================================================================================================
-	static const float MAX_OUT_GAIN          = 1.3;    // safety cap; raise or set -1 for no cap
+	static const float MAX_OUT_GAIN = 1.3;    // safety cap; raise or set -1 for no cap
 	
 	// 0 dB at d=0, −45 dB at d=inaudible_m (volume_m).
 	static float AttenuationDb(float d_m, float inaudible_m, float shapeExp = 1.6)

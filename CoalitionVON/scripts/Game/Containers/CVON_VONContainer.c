@@ -65,6 +65,8 @@ class CVON_VONContainer
 	float m_fCachedConnQ 	= -999;
 	bool  m_bCachedSameLang = true;
 	string m_sCachedFreq    = "__unset__";
+
+	static bool Extract(CVON_VONContainer instance, ScriptCtx ctx, SSnapSerializerBase snapshot)
 	{	
 		snapshot.SerializeBytes(instance.m_eVonType, 4);
 		snapshot.SerializeBytes(instance.m_SenderRplId, 4);
