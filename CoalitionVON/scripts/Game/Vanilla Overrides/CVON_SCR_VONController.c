@@ -192,6 +192,8 @@ modded class SCR_VONController
 			return;
 		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		radioComp.m_eStereo = CVON_EStereo.RIGHT;
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
@@ -205,6 +207,8 @@ modded class SCR_VONController
 			return;
 		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		radioComp.m_eStereo = CVON_EStereo.LEFT;
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
@@ -218,6 +222,8 @@ modded class SCR_VONController
 			return;
 		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		radioComp.m_eStereo = CVON_EStereo.BOTH;
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
@@ -231,6 +237,8 @@ modded class SCR_VONController
 			return;
 		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		radioComp.OpenMenu();
 	}
 	
@@ -256,6 +264,8 @@ modded class SCR_VONController
 		if (radios.Count() == 0)
 			return;
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		int channelCount = radioComp.m_aChannels.Count();
 		if (channelCount < 2)
 			return;
@@ -363,6 +373,8 @@ modded class SCR_VONController
 						return;
 					
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					if (!radioComp)
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -384,6 +396,8 @@ modded class SCR_VONController
 						return;
 					
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					if (!radioComp)
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -404,6 +418,8 @@ modded class SCR_VONController
 						return;
 					
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					if (!radioComp)
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -446,13 +462,23 @@ modded class SCR_VONController
 			return;
 		if (m_CurrentVONContainer.m_eVonType == CVON_EVONType.RADIO)
 		{
-			IEntity radio = RplComponent.Cast(Replication.FindItem(m_CurrentVONContainer.m_iRadioId)).GetEntity();
-			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
-			switch (radioComp.m_eStereo)
+			RplComponent rplComp = RplComponent.Cast(Replication.FindItem(m_CurrentVONContainer.m_iRadioId));
+			if (rplComp)
 			{
-				case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{B826EAACD5F6B6BB}UI/sounds/beepend.wav"); break;}
-				case CVON_EStereo.LEFT:  {AudioSystem.PlaySound("{ABDEAEC2D5718124}UI/sounds/beependleft.wav"); break;}
-				case CVON_EStereo.RIGHT: {AudioSystem.PlaySound("{7BF09D8FB6C39FF3}UI/sounds/beependright.wav"); break;}
+				IEntity radio = rplComp.GetEntity();
+				if (radio)
+				{
+					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					if (radioComp)
+					{
+						switch (radioComp.m_eStereo)
+						{
+							case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{B826EAACD5F6B6BB}UI/sounds/beepend.wav"); break;}
+							case CVON_EStereo.LEFT:  {AudioSystem.PlaySound("{ABDEAEC2D5718124}UI/sounds/beependleft.wav"); break;}
+							case CVON_EStereo.RIGHT: {AudioSystem.PlaySound("{7BF09D8FB6C39FF3}UI/sounds/beependright.wav"); break;}
+						}
+					}
+				}
 			}
 			
 			m_VONHud.HideVON();
@@ -559,18 +585,16 @@ modded class SCR_VONController
 		
 			if (container.m_SoundSource)
 			{
-				int maxDistance = m_VONGameModeComponent.GetPlayerVolume(playerId);
-				maxDistance *= maxDistance;
-				container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(playerId);
-				
-				float distance = vector.DistanceSq(container.m_SoundSource.GetOrigin(), m_Camera.GetOrigin());
-				if (distance < maxDistance)
-					container.m_fDistanceToSender = distance;
-				else
-					container.m_fDistanceToSender = -1;
-				container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(playerId);
-			}
+			int volume = m_VONGameModeComponent.GetPlayerVolume(playerId);
+			int maxDistance = volume;
+			maxDistance *= maxDistance;
+			container.m_iVolume = volume;
 			
+			float distance = vector.DistanceSq(container.m_SoundSource.GetOrigin(), m_Camera.GetOrigin());
+			if (distance < maxDistance)
+				container.m_fDistanceToSender = distance;
+			else
+				container.m_fDistanceToSender = -1;
 		}
 		
 		foreach (int playerId: m_PlayerIdTemp)
@@ -598,8 +622,11 @@ modded class SCR_VONController
 			}
 			else
 			{
-				SCR_CharacterControllerComponent charCont = SCR_CharacterControllerComponent.Cast(ChimeraCharacter.Cast(player).GetCharacterController());
-				if (charCont.IsDead() || charCont.IsUnconscious())
+				ChimeraCharacter chimeraChar = ChimeraCharacter.Cast(player);
+				if (!chimeraChar)
+					continue;
+				SCR_CharacterControllerComponent charCont = SCR_CharacterControllerComponent.Cast(chimeraChar.GetCharacterController());
+				if (!charCont || charCont.IsDead() || charCont.IsUnconscious())
 					if (m_PlayerController.m_aLocalEntries.Contains(playerId))
 					{
 						m_PlayerController.m_aLocalEntries.Remove(playerId);

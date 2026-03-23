@@ -155,6 +155,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	void UpdateVolume(int playerId, int input)
 	{
 		int index = m_aPlayerIds.Find(playerId);
+		if (index == -1)
+			return;
 		int currentVolume = SCR_PlayerController.m_aVolumeValues.Find(m_aPlayerVolumes.Get(index));
 
 		if (currentVolume == 0 && input == -1)
@@ -180,6 +182,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	int GetPlayerVolume(int playerId)
 	{
 		int index = m_aPlayerIds.Find(playerId);
+		if (index == -1)
+			return SCR_PlayerController.m_aVolumeValues[2]; // default mid volume
 		return m_aPlayerVolumes.Get(index);
 	}
 	
