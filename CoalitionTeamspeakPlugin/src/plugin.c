@@ -843,8 +843,6 @@ static DirectState* get_direct_state(anyID id)
     memset(s, 0, sizeof(*s));
     s->id        = id;
     s->have      = 1;
-    s->smoothedL = 0.0f;
-    s->smoothedR = 0.0f;
     for (int i = 0; i < MUFFLE_STAGES; ++i) {
         biquad_calc_lowpass(&s->lpL[i], TS_SAMPLE_RATE, 8000.0f, 0.9f);
         biquad_calc_lowpass(&s->lpR[i], TS_SAMPLE_RATE, 8000.0f, 0.9f);
@@ -1017,71 +1015,101 @@ static void apply_direct_dsp(anyID clientID, const VonEntry* e, short* samples, 
 {
     DirectState* ds = get_direct_state(clientID);
 
-    const float lGain = ds->smoothedL;
-    const float rGain = ds->smoothedR;
-
     const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
     const int   doMuf = (occDb > 0.1f) ? 1 : 0;
 
-    const float behindInt   = clampf(e->behindIntensity, 0.0f, 1.0f);
-    const int   doBehind    = (behindInt > 0.05f) ? 1 : 0;
-    float       behindAtten = 1.0f;
+    const float behindInt = clampf(e->behindIntensity, 0.0f, 1.0f);
+
+    /* TEMP: disable behind-intensity muffling/attenuation without removing code */
+    const int doBehind = 0;
+
+    float behindAtten = 1.0f;
+    /*
     if (doBehind)
         behindAtten = 1.0f - (behindInt * 0.29f);
+    */
+
+    /* Clamp gains so bad JSON cannot explode the signal */
+    const float leftGain  = clampf(e->leftGain, 0.0f, 4.0f);
+    const float rightGain = clampf(e->rightGain, 0.0f, 4.0f);
 
     if (channels <= 1) {
-        const float mGain = 0.5f * (lGain + rGain);
+        /* Mono input cannot preserve true L/R separation.
+           Use average gain so volume still tracks distance. */
+        const float monoGain = 0.5f * (leftGain + rightGain);
 
         if (!e->sameLanguage) {
             float* floatBuf = (float*)alloca(sampleCount * sizeof(float));
             for (int i = 0; i < sampleCount; ++i)
-                floatBuf[i] = ((float)samples[i] / 32768.0f) * mGain;
+                floatBuf[i] = ((float)samples[i] / 32768.0f) * monoGain;
+
             apply_babbel_effect(ds, floatBuf, sampleCount, 1);
+
             for (int i = 0; i < sampleCount; ++i) {
                 float x = floatBuf[i];
+
                 if (doMuf)
                     for (int s = 0; s < MUFFLE_STAGES; ++s)
                         x = biquad_tick(&ds->lpM[s], x);
+
                 if (doBehind) {
                     for (int s = 0; s < 2; ++s)
                         x = biquad_tick(&ds->behindLpM[s], x);
                     x *= behindAtten;
                 }
+
+                x *= DIRECT_GAIN_MUL;
                 samples[i] = clamp_i16(x * 32767.0f);
             }
         } else {
             for (int i = 0; i < sampleCount; ++i) {
-                float x = ((float)samples[i] / 32768.0f) * mGain;
+                float x = ((float)samples[i] / 32768.0f) * monoGain;
+
                 if (doMuf)
                     for (int s = 0; s < MUFFLE_STAGES; ++s)
                         x = biquad_tick(&ds->lpM[s], x);
+
                 if (doBehind) {
                     for (int s = 0; s < 2; ++s)
                         x = biquad_tick(&ds->behindLpM[s], x);
                     x *= behindAtten;
                 }
+
+                x *= DIRECT_GAIN_MUL;
                 samples[i] = clamp_i16(x * 32767.0f);
             }
         }
     } else {
+        /* Stereo: build new positional stereo from the source using LeftGain/RightGain.
+           This is the important part you were missing. */
         if (!e->sameLanguage) {
-            /* Only L+R are processed; allocate exactly 2 floats per sample. */
             float* floatBuf = (float*)alloca(sampleCount * 2 * sizeof(float));
+
             for (int i = 0; i < sampleCount; ++i) {
-                const int idx       = i * channels;
-                floatBuf[i * 2 + 0] = ((float)samples[idx + 0] / 32768.0f) * lGain;
-                floatBuf[i * 2 + 1] = ((float)samples[idx + 1] / 32768.0f) * rGain;
+                const int idx = i * channels;
+
+                /* Collapse incoming to mono source, then re-pan with JSON gains */
+                const float inL  = (float)samples[idx + 0] / 32768.0f;
+                const float inR  = (float)samples[idx + 1] / 32768.0f;
+                const float mono = 0.5f * (inL + inR);
+
+                floatBuf[i * 2 + 0] = mono * leftGain;
+                floatBuf[i * 2 + 1] = mono * rightGain;
             }
+
             apply_babbel_effect(ds, floatBuf, sampleCount * 2, 0);
+
             for (int i = 0; i < sampleCount; ++i) {
-                float     L          = floatBuf[i * 2 + 0];
-                float     R          = floatBuf[i * 2 + 1];
+                float L = floatBuf[i * 2 + 0];
+                float R = floatBuf[i * 2 + 1];
+
                 if (doMuf) {
                     for (int s = 0; s < MUFFLE_STAGES; ++s) {
                         L = biquad_tick(&ds->lpL[s], L);
                         R = biquad_tick(&ds->lpR[s], R);
                     }
                 }
+
                 if (doBehind) {
                     for (int s = 0; s < 2; ++s) {
                         L = biquad_tick(&ds->behindLpL[s], L);
@@ -1090,9 +1118,14 @@ static void apply_direct_dsp(anyID clientID, const VonEntry* e, short* samples, 
                     L *= behindAtten;
                     R *= behindAtten;
                 }
-                const int   idx      = i * channels;
-                samples[idx + 0]     = clamp_i16(L * 32767.0f);
-                samples[idx + 1]     = clamp_i16(R * 32767.0f);
+
+                L *= DIRECT_GAIN_MUL;
+                R *= DIRECT_GAIN_MUL;
+
+                const int idx    = i * channels;
+                samples[idx + 0] = clamp_i16(L * 32767.0f);
+                samples[idx + 1] = clamp_i16(R * 32767.0f);
+
                 const short monoFill = (short)((samples[idx + 0] + samples[idx + 1]) / 2);
                 for (int ch = 2; ch < channels; ++ch)
                     samples[idx + ch] = monoFill;
@@ -1100,14 +1133,22 @@ static void apply_direct_dsp(anyID clientID, const VonEntry* e, short* samples, 
         } else {
             for (int i = 0; i < sampleCount; ++i) {
                 const int idx = i * channels;
-                float     L   = ((float)samples[idx + 0] / 32768.0f) * lGain;
-                float     R   = ((float)samples[idx + 1] / 32768.0f) * rGain;
+
+                /* Collapse to mono source, then re-pan using LeftGain/RightGain */
+                const float inL  = (float)samples[idx + 0] / 32768.0f;
+                const float inR  = (float)samples[idx + 1] / 32768.0f;
+                const float mono = 0.5f * (inL + inR);
+
+                float L = mono * leftGain;
+                float R = mono * rightGain;
+
                 if (doMuf) {
                     for (int s = 0; s < MUFFLE_STAGES; ++s) {
                         L = biquad_tick(&ds->lpL[s], L);
                         R = biquad_tick(&ds->lpR[s], R);
                     }
                 }
+
                 if (doBehind) {
                     for (int s = 0; s < 2; ++s) {
                         L = biquad_tick(&ds->behindLpL[s], L);
@@ -1116,8 +1157,13 @@ static void apply_direct_dsp(anyID clientID, const VonEntry* e, short* samples, 
                     L *= behindAtten;
                     R *= behindAtten;
                 }
-                samples[idx + 0]     = clamp_i16(L * 32767.0f);
-                samples[idx + 1]     = clamp_i16(R * 32767.0f);
+
+                L *= DIRECT_GAIN_MUL;
+                R *= DIRECT_GAIN_MUL;
+
+                samples[idx + 0] = clamp_i16(L * 32767.0f);
+                samples[idx + 1] = clamp_i16(R * 32767.0f);
+
                 const short monoFill = (short)((samples[idx + 0] + samples[idx + 1]) / 2);
                 for (int ch = 2; ch < channels; ++ch)
                     samples[idx + ch] = monoFill;
@@ -1125,7 +1171,6 @@ static void apply_direct_dsp(anyID clientID, const VonEntry* e, short* samples, 
         }
     }
 }
-
 
 /* ---------------------------------------------------------------------------
    JSON loaders (using reusable buffers)
@@ -2071,7 +2116,7 @@ PLUGINS_EXPORTDLL const char* ts3plugin_name()
 }
 PLUGINS_EXPORTDLL const char* ts3plugin_version()
 {
-    return "2.0.2";
+    return "2.0.3";
 }
 PLUGINS_EXPORTDLL int ts3plugin_apiVersion()
 {
@@ -2278,10 +2323,17 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
     }
 
     DWORD age = GetTickCount() - e->lastUpdateTick;
-    if (age > 250) { /* give a bit more grace than 250ms */
+
+    /* TEMP: do not hard-silence talkers just because VON JSON did not refresh.
+   When gains remain unchanged (for example 1.0 / 1.0 centered), the game may
+   stop touching the file even though the talker is still valid. */
+    /*
+    if (age > 250) {
         silence_samples(samples, sampleCount, channels);
         return;
     }
+    */
+    (void)age;
 
     /* ----------------------------- RADIO talkers ----------------------------- */
     if (e->type == VON_RADIO) {
