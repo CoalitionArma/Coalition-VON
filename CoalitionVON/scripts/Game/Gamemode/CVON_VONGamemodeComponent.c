@@ -25,7 +25,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	[RplProp()] ref array<int> m_aPlayerVolumes = {};
 	[RplProp()] ref array<int> m_aPlayerClientIds = {};
 	[RplProp()] ref array<int> m_aPlayerIds = {};
-	string m_sTeamspeakPluginVersion = "2.0.2";
+	string m_sTeamspeakPluginVersion = "2.0.3";
 	ref map <int, string> m_PlayerFreqArray = new map <int, string>;
 	ref map <int, string> m_PlayerKeyArray = new map <int, string>;
 	
@@ -155,6 +155,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	void UpdateVolume(int playerId, int input)
 	{
 		int index = m_aPlayerIds.Find(playerId);
+		if (index == -1)
+			return;
 		int currentVolume = SCR_PlayerController.m_aVolumeValues.Find(m_aPlayerVolumes.Get(index));
 
 		if (currentVolume == 0 && input == -1)
@@ -180,6 +182,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	int GetPlayerVolume(int playerId)
 	{
 		int index = m_aPlayerIds.Find(playerId);
+		if (index == -1)
+			return SCR_PlayerController.m_aVolumeValues[2]; // default mid volume
 		return m_aPlayerVolumes.Get(index);
 	}
 	

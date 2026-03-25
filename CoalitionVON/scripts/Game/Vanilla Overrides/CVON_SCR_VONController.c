@@ -192,6 +192,8 @@ modded class SCR_VONController
 			return;
 		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		radioComp.m_eStereo = CVON_EStereo.RIGHT;
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
@@ -205,6 +207,8 @@ modded class SCR_VONController
 			return;
 		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		radioComp.m_eStereo = CVON_EStereo.LEFT;
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
@@ -218,6 +222,8 @@ modded class SCR_VONController
 			return;
 		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		radioComp.m_eStereo = CVON_EStereo.BOTH;
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
@@ -231,6 +237,8 @@ modded class SCR_VONController
 			return;
 		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		radioComp.OpenMenu();
 	}
 	
@@ -256,6 +264,8 @@ modded class SCR_VONController
 		if (radios.Count() == 0)
 			return;
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radios.Get(0).FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		int channelCount = radioComp.m_aChannels.Count();
 		if (channelCount < 2)
 			return;
@@ -363,6 +373,8 @@ modded class SCR_VONController
 						return;
 					
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					if (!radioComp)
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -384,6 +396,8 @@ modded class SCR_VONController
 						return;
 					
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					if (!radioComp)
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -404,6 +418,8 @@ modded class SCR_VONController
 						return;
 					
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					if (!radioComp)
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -446,13 +462,23 @@ modded class SCR_VONController
 			return;
 		if (m_CurrentVONContainer.m_eVonType == CVON_EVONType.RADIO)
 		{
-			IEntity radio = RplComponent.Cast(Replication.FindItem(m_CurrentVONContainer.m_iRadioId)).GetEntity();
-			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
-			switch (radioComp.m_eStereo)
+			RplComponent rplComp = RplComponent.Cast(Replication.FindItem(m_CurrentVONContainer.m_iRadioId));
+			if (rplComp)
 			{
-				case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{B826EAACD5F6B6BB}UI/sounds/beepend.wav"); break;}
-				case CVON_EStereo.LEFT:  {AudioSystem.PlaySound("{ABDEAEC2D5718124}UI/sounds/beependleft.wav"); break;}
-				case CVON_EStereo.RIGHT: {AudioSystem.PlaySound("{7BF09D8FB6C39FF3}UI/sounds/beependright.wav"); break;}
+				IEntity radio = rplComp.GetEntity();
+				if (radio)
+				{
+					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+					if (radioComp)
+					{
+						switch (radioComp.m_eStereo)
+						{
+							case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{B826EAACD5F6B6BB}UI/sounds/beepend.wav"); break;}
+							case CVON_EStereo.LEFT:  {AudioSystem.PlaySound("{ABDEAEC2D5718124}UI/sounds/beependleft.wav"); break;}
+							case CVON_EStereo.RIGHT: {AudioSystem.PlaySound("{7BF09D8FB6C39FF3}UI/sounds/beependright.wav"); break;}
+						}
+					}
+				}
 			}
 			
 			m_VONHud.HideVON();
@@ -501,7 +527,11 @@ modded class SCR_VONController
 	float m_fWriteTeamspeakClientIdCooldown = 0;
 	ref array<int> m_PlayerIdTemp = {};
 	float m_fHeadCacheBuffer = 0;
-	float m_fVONSaveBuffer = 0;
+	// VONServerData.json only needs to be checked at ~1 s; reading it every 50 ms
+	// was 20 unnecessary file reads per second just to detect a TSClientID update.
+	float m_fServerDataBuffer = 0;
+	// Dirty-flag tracking: last value of IsTransmitting written to VONData.json.
+	bool m_bLastWrittenTransmitting = false;
 	override void EOnFixedFrame(IEntity owner, float timeSlice)
 	{
 		super.EOnFixedFrame(owner, timeSlice);
@@ -559,19 +589,18 @@ modded class SCR_VONController
 		
 			if (container.m_SoundSource)
 			{
-				int maxDistance = m_VONGameModeComponent.GetPlayerVolume(playerId);
-				maxDistance *= maxDistance;
-				container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(playerId);
-				
-				float distance = vector.DistanceSq(container.m_SoundSource.GetOrigin(), m_Camera.GetOrigin());
-				if (distance < maxDistance)
-					container.m_fDistanceToSender = distance;
-				else
-					container.m_fDistanceToSender = -1;
-				container.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(playerId);
-			}
+			int volume = m_VONGameModeComponent.GetPlayerVolume(playerId);
+			int maxDistance = volume;
+			maxDistance *= maxDistance;
+			container.m_iVolume = volume;
 			
+			float distance = vector.DistanceSq(container.m_SoundSource.GetOrigin(), m_Camera.GetOrigin());
+			if (distance < maxDistance)
+				container.m_fDistanceToSender = distance;
+			else
+				container.m_fDistanceToSender = -1;
 		}
+		} // end foreach m_aLocalEntries
 		
 		foreach (int playerId: m_PlayerIdTemp)
 		{
@@ -598,8 +627,11 @@ modded class SCR_VONController
 			}
 			else
 			{
-				SCR_CharacterControllerComponent charCont = SCR_CharacterControllerComponent.Cast(ChimeraCharacter.Cast(player).GetCharacterController());
-				if (charCont.IsDead() || charCont.IsUnconscious())
+				ChimeraCharacter chimeraChar = ChimeraCharacter.Cast(player);
+				if (!chimeraChar)
+					continue;
+				SCR_CharacterControllerComponent charCont = SCR_CharacterControllerComponent.Cast(chimeraChar.GetCharacterController());
+				if (!charCont || charCont.IsDead() || charCont.IsUnconscious())
 					if (m_PlayerController.m_aLocalEntries.Contains(playerId))
 					{
 						m_PlayerController.m_aLocalEntries.Remove(playerId);
@@ -667,13 +699,12 @@ modded class SCR_VONController
 			m_bHasBroadcasted = true;
 		}
 		
-		//Our plugin only checks every 50ms
-		if (m_fVONSaveBuffer >= 0.05)
-		{
-			WriteJSON();
-			m_fVONSaveBuffer = 0;
-		}
-		else m_fVONSaveBuffer += timeSlice;
+		// WriteJSON runs every tick; the dirty flag inside skips SaveToFile when nothing changed.
+		m_fServerDataBuffer += timeSlice;
+		bool checkServerData = (m_fServerDataBuffer >= 1.0);
+		if (checkServerData)
+			m_fServerDataBuffer = 0;
+		WriteJSON(checkServerData);
 	}
 	
 	//Thank god for CHATGPT
@@ -682,7 +713,7 @@ modded class SCR_VONController
 	// Geometry only: pan + rear shadow + elevation + bleed.
 	// Multiply the returned L/R by your own plugin volume afterward.
 	//==========================================================================================================================================================================
-	static const float MAX_OUT_GAIN          = 1.3;    // safety cap; raise or set -1 for no cap
+	static const float MAX_OUT_GAIN = 1.3;    // safety cap; raise or set -1 for no cap
 	
 	// 0 dB at d=0, −45 dB at d=inaudible_m (volume_m).
 	static float AttenuationDb(float d_m, float inaudible_m, float shapeExp = 1.6)
@@ -1066,49 +1097,17 @@ modded class SCR_VONController
 	//Teamspeak reads the JSON, parses the data and compares it using the clientId to see if they should hear this baffoon ->
 	//The entry is removed from the local array and is no longer written to the JSON, there for teamspeak just mutes that client as he has no data in the JSON.
 	//==========================================================================================================================================================================
-	void WriteJSON()
+	// checkServerData: when false, skip the VONServerData.json read entirely.
+	// Called every 50ms but checkServerData is only true once per second to avoid
+	// opening and parsing a file 20 times per second for data that rarely changes.
+	void WriteJSON(bool checkServerData = true)
 	{
 		if (!GetGame().GetPlayerController())
 			return;
-		SCR_JsonLoadContext VONLoad = new SCR_JsonLoadContext();
-		if (!VONLoad.LoadFromFile("$profile:/VONServerData.json"))
+		if (checkServerData)
 		{
-			SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
-			VONServerData.StartObject("ServerData");
-			VONServerData.SetMaxDecimalPlaces(1);
-			VONServerData.WriteValue("InGame", true);
-			VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(m_PlayerController.GetPlayerId()));
-			VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
-			VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
-			VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
-			VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
-			VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
-			VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
-			VONServerData.EndObject();
-			VONServerData.SaveToFile("$profile:/VONServerData.json");
-		}
-		else
-		{
-			string ChannelName;
-			string ChannelPassword;
-			int TSClientId = 0;
-			bool InGame;
-			string gameName;
-			VONLoad.StartObject("ServerData");
-			VONLoad.ReadValue("InGame", InGame);
-			VONLoad.ReadValue("VONChannelName", ChannelName);
-			VONLoad.ReadValue("VONChannelPassword", ChannelPassword);
-			VONLoad.ReadValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
-			VONLoad.ReadValue("TSClientID", TSClientId);
-			VONLoad.ReadValue("InGameName", gameName);
-			if (m_PlayerController.GetTeamspeakClientId() != TSClientId && m_fWriteTeamspeakClientIdCooldown <= 0)
-			{
-				m_fWriteTeamspeakClientIdCooldown = 1;
-				m_PlayerController.SetTeamspeakClientId(TSClientId);
-			}
-				
-			VONLoad.EndObject();
-			if (gameName == "" || ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
+			SCR_JsonLoadContext VONLoad = new SCR_JsonLoadContext();
+			if (!VONLoad.LoadFromFile("$profile:/VONServerData.json"))
 			{
 				SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
 				VONServerData.StartObject("ServerData");
@@ -1123,6 +1122,44 @@ modded class SCR_VONController
 				VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
 				VONServerData.EndObject();
 				VONServerData.SaveToFile("$profile:/VONServerData.json");
+			}
+			else
+			{
+				string ChannelName;
+				string ChannelPassword;
+				int TSClientId = 0;
+				bool InGame;
+				string gameName;
+				VONLoad.StartObject("ServerData");
+				VONLoad.ReadValue("InGame", InGame);
+				VONLoad.ReadValue("VONChannelName", ChannelName);
+				VONLoad.ReadValue("VONChannelPassword", ChannelPassword);
+				VONLoad.ReadValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
+				VONLoad.ReadValue("TSClientID", TSClientId);
+				VONLoad.ReadValue("InGameName", gameName);
+				if (m_PlayerController.GetTeamspeakClientId() != TSClientId && m_fWriteTeamspeakClientIdCooldown <= 0)
+				{
+					m_fWriteTeamspeakClientIdCooldown = 1;
+					m_PlayerController.SetTeamspeakClientId(TSClientId);
+				}
+				
+				VONLoad.EndObject();
+				if (gameName == "" || ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
+				{
+					SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
+					VONServerData.StartObject("ServerData");
+					VONServerData.SetMaxDecimalPlaces(1);
+					VONServerData.WriteValue("InGame", true);
+					VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(m_PlayerController.GetPlayerId()));
+					VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
+					VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
+					VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
+					VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
+					VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
+					VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
+					VONServerData.EndObject();
+					VONServerData.SaveToFile("$profile:/VONServerData.json");
+				}
 			}
 		}
 		#ifdef ENABLE_DIAG
@@ -1145,6 +1182,9 @@ modded class SCR_VONController
 		IEntity localEntity = m_Camera;
 		if (!localEntity)
 			return;
+		// Dirty flag: if nothing changed since the last write, skip SaveToFile entirely.
+		// JSON serialization still happens in memory (cheap); the disk write is what we avoid.
+		bool dirty = (m_bIsBroadcasting != m_bLastWrittenTransmitting);
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
 			IEntity soundSource;
@@ -1213,6 +1253,20 @@ modded class SCR_VONController
 				if (m_FactionManager.GetPlayerFaction(m_PlayerController.GetPlayerId()) != m_FactionManager.GetPlayerFaction(container.m_iPlayerId) && m_BaseGamemode.IsBabbelEnabled())
 					sameLanguage = false;
 			}
+
+			// Check if this entry differs enough from what was last written (epsilon ~0.5%).
+			const float EPS = 0.005;
+			if (!dirty)
+			{
+				if (Math.AbsFloat(left  - container.m_fCachedLeft)   > EPS ||
+					Math.AbsFloat(right - container.m_fCachedRight)  > EPS ||
+					Math.AbsFloat(behindIntensity - container.m_fCachedBehind) > EPS ||
+					Math.AbsFloat(container.m_fConnectionQuality - container.m_fCachedConnQ) > EPS ||
+					loweredDecibels  != container.m_iCachedDecibels ||
+					sameLanguage     != container.m_bCachedSameLang ||
+					frequency        != container.m_sCachedFreq)
+					dirty = true;
+			}
 				
 			VONSave.StartObject(m_PlayerController.GetPlayersTeamspeakClientId(playerId).ToString());
 			VONSave.SetMaxDecimalPlaces(3);
@@ -1227,8 +1281,21 @@ modded class SCR_VONController
 			VONSave.WriteValue("BehindIntensity", behindIntensity);
 			VONSave.WriteValue("SameLanguage", sameLanguage);
 			VONSave.EndObject();
+
+			// Update the per-entry cache so we can detect the next change.
+			container.m_fCachedLeft    = left;
+			container.m_fCachedRight   = right;
+			container.m_fCachedBehind  = behindIntensity;
+			container.m_iCachedDecibels = loweredDecibels;
+			container.m_fCachedConnQ   = container.m_fConnectionQuality;
+			container.m_bCachedSameLang = sameLanguage;
+			container.m_sCachedFreq    = frequency;
 		}
-		VONSave.SaveToFile("$profile:/VONData.json");
+		if (dirty)
+		{
+			VONSave.SaveToFile("$profile:/VONData.json");
+			m_bLastWrittenTransmitting = m_bIsBroadcasting;
+		}
 	}
 	
 	

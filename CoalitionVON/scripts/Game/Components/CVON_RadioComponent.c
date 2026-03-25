@@ -95,6 +95,11 @@ class CVON_RadioComponent: ScriptComponent
 			m_aChannels.Set(m_iCurrentChannel + input, freq);
 		m_sFrequency = freq;
 		bool isShared = false;
+		if (!GetOwner().GetRootParent())
+		{
+			Replication.BumpMe();
+			return;
+		}
 		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(GetOwner().GetRootParent().FindComponent(FactionAffiliationComponent));
 		string ownerFactionKey = factionComp.GetAffiliatedFactionKey();
 		foreach (CVON_SharedFrequencyObject sharedFreq: CVON_VONGameModeComponent.GetInstance().m_aSharedFrequencies)
