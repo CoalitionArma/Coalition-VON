@@ -759,17 +759,13 @@ typedef struct {
     Biquad lpM[MUFFLE_STAGES];
     float  lastFc;
 
-    // NEW for smoothing
-    float smoothedL;
-    float smoothedR;
-
     // Behind effect filters
     Biquad behindLpL[2];
     Biquad behindLpR[2];
     Biquad behindLpM[2];
     float  lastBehindFc;
 
-    // Babbel effect filters (for foreign language)
+    // Babbel effect filters
     Biquad babbelLp1L;
     Biquad babbelLp1R;
     Biquad babbelLp1M;
@@ -1845,7 +1841,6 @@ static void update_direct_states_in_worker(void)
 
         /* Skip radio-only entries */
         if (e->type == VON_RADIO) {
-            /* Check if this should fallback to direct */
             const RadioSnapshot* rSnap   = get_active_radio();
             int                  matched = 0;
 
@@ -1865,28 +1860,13 @@ static void update_direct_states_in_worker(void)
                 }
             }
 
-            /* If matched, skip (pure radio, no direct processing needed) */
             if (matched)
                 continue;
         }
 
-        /* Get or create DirectState for this client */
         DirectState* ds = get_direct_state(e->id);
         if (!ds)
             continue;
-
-        /* Calculate target gains */
-        const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
-        const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
-        float       avg       = 0.5f * (lG + rG);
-        float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
-
-        const float lTarget = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-        const float rTarget = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-
-        /* Smooth gain updates (happens every worker tick, not just when audio flows) */
-        ds->smoothedL = smooth_gain(ds->smoothedL, lTarget);
-        ds->smoothedR = smooth_gain(ds->smoothedR, rTarget);
 
         /* Update muffle filters if needed */
         const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
@@ -2091,7 +2071,7 @@ PLUGINS_EXPORTDLL const char* ts3plugin_name()
 }
 PLUGINS_EXPORTDLL const char* ts3plugin_version()
 {
-    return "2.0.1";
+    return "2.0.2";
 }
 PLUGINS_EXPORTDLL int ts3plugin_apiVersion()
 {
