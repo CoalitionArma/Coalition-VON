@@ -143,8 +143,8 @@ static void logf(const char* fmt, ...)
 static struct TS3Functions ts3Functions;
 static uint64              g_prevChannelId     = 0; /* user’s last non-game channel (this conn) */
 static uint64              g_gameChannelId     = 0; /* cached ID of the VONChannelName */
-static DWORD               g_nextReturnTryTick = 0;
-static DWORD               g_returnBackoffMs   = MOVE_BACKOFF_MIN_MS;
+static unsigned long       g_nextReturnTryTick = 0;
+static unsigned long       g_returnBackoffMs   = MOVE_BACKOFF_MIN_MS;
 static char                g_SD_serverIp[512]       = {0};
 static char                g_SD_serverPassword[512] = {0};
 static char                g_SD_ingameName[512]     = {0};
@@ -367,26 +367,26 @@ static int read_file_reuse(const char* path, char** pBuf, size_t* pCap, long* ou
 typedef enum { VON_DIRECT = 0, VON_RADIO = 1 } EVONType;
 
 typedef struct {
-    anyID    id;
-    EVONType type;
-    float    leftGain;
-    float    rightGain;
-    char     txFreq[64];
-    int      txTimeDev;
-    float    connQ;
-    char     txFaction[64];
-    float    muffledDb;
-    float    behindIntensity;
-    int      sameLanguage;
-    DWORD    lastUpdateTick;
+    anyID         id;
+    EVONType      type;
+    float         leftGain;
+    float         rightGain;
+    char          txFreq[64];
+    int           txTimeDev;
+    float         connQ;
+    char          txFaction[64];
+    float         muffledDb;
+    float         behindIntensity;
+    int           sameLanguage;
+    unsigned long lastUpdateTick;
 } VonEntry;
 
 /* -------- Double-buffered snapshots -------- */
 typedef struct {
-    VonEntry entries[MAX_TRACKED];
-    size_t   count;
-    int      loaded;
-    DWORD    buildTick;
+    VonEntry      entries[MAX_TRACKED];
+    size_t        count;
+    int           loaded;
+    unsigned long buildTick;
 } VonSnapshot;
 
 typedef struct {
@@ -398,10 +398,10 @@ typedef struct {
 } RadioLocal;
 
 typedef struct {
-    RadioLocal list[256];
-    size_t     count;
-    int        loaded;
-    DWORD      buildTick;
+    RadioLocal    list[256];
+    size_t        count;
+    int           loaded;
+    unsigned long buildTick;
 } RadioSnapshot;
 
 /* Two buffers each; audio reads ACTIVE, worker writes INACTIVE */
@@ -409,18 +409,18 @@ static VonSnapshot   g_VonSnap[2]   = {0};
 static RadioSnapshot g_RadioSnap[2] = {0};
 
 /* Active indices (0 or 1). Audio reads via atomic load; worker flips. */
-static volatile LONG g_vonActiveIdx   = 0;
-static volatile LONG g_radioActiveIdx = 0;
+static volatile long g_vonActiveIdx   = 0;
+static volatile long g_radioActiveIdx = 0;
 
 /* Paths (was g_Von.jsonPath earlier) */
 static char g_VonPath[PATH_BUFSIZE] = {0};
 
 /* ServerData cache */
-static char  g_ServerPath[PATH_BUFSIZE] = {0};
-static int   g_SD_have = 0, g_SD_inGame = 0;
-static char  g_SD_chanName[512]         = {0};
-static char  g_SD_chanPass[512]         = {0};
-static DWORD g_serverWatchSuppressUntil = 0;
+static char          g_ServerPath[PATH_BUFSIZE] = {0};
+static int           g_SD_have = 0, g_SD_inGame = 0;
+static char          g_SD_chanName[512]         = {0};
+static char          g_SD_chanPass[512]         = {0};
+static unsigned long g_serverWatchSuppressUntil = 0;
 
 /* Last written snapshot to avoid unnecessary writes */
 static struct {
@@ -438,7 +438,7 @@ static WatchedFileState g_vonDataWatch = {0}, g_serverWatch = {0}, g_radioWatch 
 
 /* Mic + state gate (worker sets; audio reads) */
 static int           g_IsTransmitting = 0, g_LastMicActive = -1;
-static volatile LONG g_inVonActiveFlag = 0; /* 0/1 set by worker, read by audio */
+static volatile long g_inVonActiveFlag = 0; /* 0/1 set by worker, read by audio */
 
 /* Per-client volume modifier state and muting control */
 typedef struct {
@@ -662,12 +662,12 @@ static RadioState* get_radio_state(anyID id)
 
 static inline const VonSnapshot* get_active_von(void)
 {
-    LONG idx = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
+    long idx = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
     return &g_VonSnap[(idx & 1)];
 }
 static inline const RadioSnapshot* get_active_radio(void)
 {
-    LONG idx = InterlockedCompareExchange(&g_radioActiveIdx, 0, 0);
+    long idx = InterlockedCompareExchange(&g_radioActiveIdx, 0, 0);
     return &g_RadioSnap[(idx & 1)];
 }
 
@@ -1408,7 +1408,7 @@ static void read_serverdata_from_disk(void)
 {
     if (!g_ServerPath[0])
         return;
-    if ((DWORD)GetTickCount() < g_serverWatchSuppressUntil)
+    if (GetTickCount() < g_serverWatchSuppressUntil)
         return; /* ignore own recent writes */
 
     long sz = 0;
@@ -1551,15 +1551,15 @@ static void write_serverdata_if_changed(uint64 sch)
 
 
 /* Channel move with backoff handled by worker */
-static DWORD g_nextMoveTryTick = 0;
-static DWORD g_moveBackoffMs   = MOVE_BACKOFF_MIN_MS;
+static unsigned long g_nextMoveTryTick = 0;
+static unsigned long g_moveBackoffMs   = MOVE_BACKOFF_MIN_MS;
 
 static void try_ensure_move(uint64 sch)
 {
     if (!g_SD_have || !g_SD_inGame || !g_SD_chanName[0] || !sch)
         return;
 
-    DWORD now = GetTickCount();
+    unsigned long now = GetTickCount();
     if (now < g_nextMoveTryTick)
         return;
 
@@ -1635,7 +1635,7 @@ static void try_return_to_previous(uint64 sch)
     if (g_SD_inGame)
         return; /* only when OUT of game */
 
-    DWORD now = GetTickCount();
+    unsigned long now = GetTickCount();
     if (now < g_nextReturnTryTick)
         return;
 
@@ -1692,11 +1692,11 @@ static void try_return_to_previous(uint64 sch)
    Worker thread: file reloads + moves + mic state
 --------------------------------------------------------------------------- */
 static HANDLE        g_workerThread = NULL;
-static volatile LONG g_workerQuit   = 0;
+static volatile long g_workerQuit   = 0;
 
-static DWORD g_nextVonReloadTick    = 0;
-static DWORD g_nextRadioReloadTick  = 0;
-static DWORD g_nextServerReloadTick = 0;
+static unsigned long g_nextVonReloadTick    = 0;
+static unsigned long g_nextRadioReloadTick  = 0;
+static unsigned long g_nextServerReloadTick = 0;
 
 /* Find or create client state for muting tracking */
 static ClientApplyState* get_client_state(anyID clientID)
@@ -1943,18 +1943,18 @@ static void update_direct_states_in_worker(void)
     }
 }
 
-static DWORD WINAPI worker_main(LPVOID param)
+static unsigned long WINAPI worker_main(LPVOID param)
 {
     (void)param;
 
     while (InterlockedCompareExchange(&g_workerQuit, 0, 0) == 0) {
-        DWORD  now = GetTickCount();
+        unsigned long now = GetTickCount();
         uint64 sch = ts3Functions.getCurrentServerConnectionHandlerID();
 
         /* ---------------- ServerData reload/write ---------------- */
         if (now >= g_nextServerReloadTick) {
             g_nextServerReloadTick = now + SERVERDATA_RELOAD_MS;
-            if ((DWORD)now >= g_serverWatchSuppressUntil) {
+            if (now >= g_serverWatchSuppressUntil) {
                 FILETIME wt;
                 if (g_ServerPath[0] && file_modified_since_last(g_ServerPath, &g_serverWatch, &wt))
                     read_serverdata_from_disk();
@@ -2044,8 +2044,8 @@ static DWORD WINAPI worker_main(LPVOID param)
             if (g_VonPath[0]) {
                 FILETIME wt;
                 if (file_modified_since_last(g_VonPath, &g_vonDataWatch, &wt)) {
-                    LONG readIdx  = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
-                    LONG writeIdx = (readIdx ^ 1) & 1; /* inactive buffer */
+                    long readIdx  = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
+                    long writeIdx = (readIdx ^ 1) & 1; /* inactive buffer */
                     if (load_von_into(&g_VonSnap[writeIdx])) {
                         InterlockedExchange(&g_vonActiveIdx, writeIdx); /* publish */
                     }
@@ -2069,8 +2069,8 @@ static DWORD WINAPI worker_main(LPVOID param)
             if (g_RadioPath[0]) {
                 FILETIME wt;
                 if (file_modified_since_last(g_RadioPath, &g_radioWatch, &wt)) {
-                    LONG readIdx  = InterlockedCompareExchange(&g_radioActiveIdx, 0, 0);
-                    LONG writeIdx = (readIdx ^ 1) & 1;
+                    long readIdx  = InterlockedCompareExchange(&g_radioActiveIdx, 0, 0);
+                    long writeIdx = (readIdx ^ 1) & 1;
                     if (load_radio_into(&g_RadioSnap[writeIdx])) {
                         InterlockedExchange(&g_radioActiveIdx, writeIdx);
                     }
@@ -2168,7 +2168,7 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
     /* Build initial snapshots so audio has something valid to read */
     {
         /* VON */
-        LONG w = 0;
+        long w = 0;
         memset(&g_VonSnap[w], 0, sizeof(g_VonSnap[w]));
         load_von_into(&g_VonSnap[w]); /* best effort */
         InterlockedExchange(&g_vonActiveIdx, w);
@@ -2322,8 +2322,7 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
         return;
     }
 
-    DWORD age = GetTickCount() - e->lastUpdateTick;
-
+    unsigned long age = GetTickCount() - e->lastUpdateTick;
     /* TEMP: do not hard-silence talkers just because VON JSON did not refresh.
    When gains remain unchanged (for example 1.0 / 1.0 centered), the game may
    stop touching the file even though the talker is still valid. */
