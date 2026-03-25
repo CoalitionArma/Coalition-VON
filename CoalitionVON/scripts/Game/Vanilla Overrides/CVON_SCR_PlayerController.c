@@ -42,17 +42,17 @@ modded class SCR_PlayerController
 	
 	int GetTeamspeakClientId()
 	{
-		if (!CVON_VONGameModeComponent.GetInstance().m_aPlayerIds.Contains(GetPlayerId()))
-			return 0;
 		int index = CVON_VONGameModeComponent.GetInstance().m_aPlayerIds.Find(GetPlayerId());
+		if (index == -1)
+			return 0;
 		return CVON_VONGameModeComponent.GetInstance().m_aPlayerClientIds.Get(index);
 	}
 	
 	int GetPlayersTeamspeakClientId(int playerId)
 	{
-		if (!CVON_VONGameModeComponent.GetInstance().m_aPlayerIds.Contains(playerId))
-			return 0;
 		int index = CVON_VONGameModeComponent.GetInstance().m_aPlayerIds.Find(playerId);
+		if (index == -1)
+			return 0;
 		return CVON_VONGameModeComponent.GetInstance().m_aPlayerClientIds.Get(index);
 	}
 	
@@ -77,9 +77,11 @@ modded class SCR_PlayerController
 			if (!radio)
 				continue;
 			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+			if (!radioComp)
+				continue;
 			SCR_FactionManager factionMan = SCR_FactionManager.Cast(GetGame().GetFactionManager());
 			if (radioComp.m_sFactionKey != "" && radioComp.m_sFactionKey != factionMan.GetPlayerFaction(GetPlayerId()).GetFactionKey())
-				return;
+				continue;
 			ref CVON_RadioSettingObject setting = new CVON_RadioSettingObject();
 			setting.m_sFreq = radioComp.m_sFrequency;
 			setting.m_Stereo = radioComp.m_eStereo;
@@ -143,8 +145,15 @@ modded class SCR_PlayerController
 			m_aRadios.InsertAll(shortRangeRadios);
 		if (longRangeRadios)
 			m_aRadios.InsertAll(longRangeRadios);
-		IEntity radioEntity = RplComponent.Cast(Replication.FindItem(radios.Get(0))).GetEntity();
+		RplComponent firstRplComp = RplComponent.Cast(Replication.FindItem(radios.Get(0)));
+		if (!firstRplComp)
+			return;
+		IEntity radioEntity = firstRplComp.GetEntity();
+		if (!radioEntity)
+			return;
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
 		if (GetGame().GetPlayerController())
 		{
 			radioComp.WriteJSON(to);

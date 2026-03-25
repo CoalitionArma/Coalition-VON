@@ -27,7 +27,10 @@ modded class SCR_CharacterInventoryStorageComponent
 			radioComp.InitializeRadios();
 		}
 		
-		SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).m_aRadios.Insert(item);
+		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
+		if (!pc)
+			return;
+		pc.m_aRadios.Insert(item);
 	}
 	
 	override void HandleOnItemRemovedFromInventory( IEntity item, BaseInventoryStorageComponent storageOwner )
@@ -48,6 +51,10 @@ modded class SCR_CharacterInventoryStorageComponent
 		
 		if (GetGame().GetPlayerController())
 			CVON_RadioComponent.Cast(item.FindComponent(CVON_RadioComponent)).WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
-		SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).m_aRadios.RemoveItemOrdered(item);
+		
+		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
+		if (!pc)
+			return;
+		pc.m_aRadios.RemoveItemOrdered(item);
 	}
 }
