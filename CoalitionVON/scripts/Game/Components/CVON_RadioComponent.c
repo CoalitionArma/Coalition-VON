@@ -116,8 +116,19 @@ class CVON_RadioComponent: ScriptComponent
 		int playerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(GetOwner().GetRootParent());
 		if (playerId > 0 && updateSettings)
 			SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).UpdateSettings();
-		if (!isShared)
-			m_sFactionKey = m_sOriginalFactionKey;
+		if (!isShared && m_sOriginalFactionKey == "")
+			GetGame().GetCallqueue().CallLater(SetFactionKey, 1000, false);
+		else if (!isShared && m_sOriginalFactionKey != "")
+			SetFactionKey();
+		Replication.BumpMe();
+	}
+	
+	void SetFactionKey()
+	{
+		if (!Replication.IsServer())
+			return;
+
+		m_sFactionKey = m_sOriginalFactionKey;
 		Replication.BumpMe();
 	}
 	

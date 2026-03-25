@@ -739,17 +739,13 @@ typedef struct {
     Biquad lpM[MUFFLE_STAGES];
     float  lastFc;
 
-    // NEW for smoothing
-    float smoothedL;
-    float smoothedR;
-
     // Behind effect filters
     Biquad behindLpL[2];
     Biquad behindLpR[2];
     Biquad behindLpM[2];
     float  lastBehindFc;
 
-    // Babbel effect filters (for foreign language)
+    // Babbel effect filters
     Biquad babbelLp1L;
     Biquad babbelLp1R;
     Biquad babbelLp1M;
@@ -796,10 +792,9 @@ static DirectState* get_direct_state(anyID id)
     if (g_directCount < sizeof(g_directStates) / sizeof(g_directStates[0])) {
         DirectState* s = &g_directStates[g_directCount++];
         memset(s, 0, sizeof(*s));
-        s->id        = id;
-        s->have      = 1;
-        s->smoothedL = 0.0f;
-        s->smoothedR = 0.0f;
+        s->id   = id;
+        s->have = 1;
+        // Remove smoothedL/smoothedR initialization
         for (int i = 0; i < MUFFLE_STAGES; ++i) {
             biquad_calc_lowpass(&s->lpL[i], TS_SAMPLE_RATE, 8000.0f, 0.9f);
             biquad_calc_lowpass(&s->lpR[i], TS_SAMPLE_RATE, 8000.0f, 0.9f);
@@ -807,7 +802,6 @@ static DirectState* get_direct_state(anyID id)
         }
         s->lastFc = 8000.0f;
 
-        // Initialize behind effect filters
         for (int i = 0; i < 2; ++i) {
             biquad_calc_lowpass(&s->behindLpL[i], TS_SAMPLE_RATE, 8000.0f, 0.7f);
             biquad_calc_lowpass(&s->behindLpR[i], TS_SAMPLE_RATE, 8000.0f, 0.7f);
@@ -815,7 +809,6 @@ static DirectState* get_direct_state(anyID id)
         }
         s->lastBehindFc = 8000.0f;
 
-        // Initialize Babbel effect filters
         biquad_calc_lowpass(&s->babbelLp1L, TS_SAMPLE_RATE, BABBEL_LP1_FREQ, BABBEL_LP_Q);
         biquad_calc_lowpass(&s->babbelLp1R, TS_SAMPLE_RATE, BABBEL_LP1_FREQ, BABBEL_LP_Q);
         biquad_calc_lowpass(&s->babbelLp1M, TS_SAMPLE_RATE, BABBEL_LP1_FREQ, BABBEL_LP_Q);
@@ -829,12 +822,6 @@ static DirectState* get_direct_state(anyID id)
     }
     LeaveCriticalSection(&g_directLock);
     return &g_directStates[0];
-}
-
-static inline float smooth_gain(float current, float target)
-{
-    const float alpha = 0.05f; // 0.0 = frozen, 1.0 = instant
-    return current + alpha * (target - current);
 }
 
 /* Apply Babbel effect (foreign language distortion) - IMPROVED for maximum unintelligibility
@@ -1650,7 +1637,6 @@ static void update_direct_states_in_worker(void)
 
         /* Skip radio-only entries */
         if (e->type == VON_RADIO) {
-            /* Check if this should fallback to direct */
             const RadioSnapshot* rSnap   = get_active_radio();
             int                  matched = 0;
 
@@ -1670,28 +1656,13 @@ static void update_direct_states_in_worker(void)
                 }
             }
 
-            /* If matched, skip (pure radio, no direct processing needed) */
             if (matched)
                 continue;
         }
 
-        /* Get or create DirectState for this client */
         DirectState* ds = get_direct_state(e->id);
         if (!ds)
             continue;
-
-        /* Calculate target gains */
-        const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
-        const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
-        float       avg       = 0.5f * (lG + rG);
-        float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
-
-        const float lTarget = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-        const float rTarget = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
-
-        /* Smooth gain updates (happens every worker tick, not just when audio flows) */
-        ds->smoothedL = smooth_gain(ds->smoothedL, lTarget);
-        ds->smoothedR = smooth_gain(ds->smoothedR, rTarget);
 
         /* Update muffle filters if needed */
         const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
@@ -1896,7 +1867,7 @@ PLUGINS_EXPORTDLL const char* ts3plugin_name()
 }
 PLUGINS_EXPORTDLL const char* ts3plugin_version()
 {
-    return "2.0.1";
+    return "2.0.2";
 }
 PLUGINS_EXPORTDLL int ts3plugin_apiVersion()
 {
@@ -2228,14 +2199,19 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
             }
             return;
         } else {
-            /* ------------------ DIRECT fallback (simplified - state updated in worker) ------------------ */
+            /* ------------------ DIRECT fallback (no smoothing) ------------------ */
             DirectState* ds = get_direct_state(clientID);
 
-            /* Use pre-smoothed gains from worker thread */
-            const float lGain = ds->smoothedL;
-            const float rGain = ds->smoothedR;
+            /* Calculate gains directly from VonEntry */
+            const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
+            const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
+            float       avg       = 0.5f * (lG + rG);
+            float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
 
-            /* Filters are already updated in worker, just check if we need to apply them */
+            const float lGain = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+            const float rGain = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+
+            /* Filters are updated in worker, just check if we need to apply them */
             const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
             const int   doMuf = (occDb > 0.1f) ? 1 : 0;
 
@@ -2353,14 +2329,20 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
     }
 
     /* ----------------------------- DIRECT talkers (simplified - state updated in worker) ----------------------------- */
+    /* ----------------------------- DIRECT talkers (no smoothing) ----------------------------- */
     {
         DirectState* ds = get_direct_state(clientID);
 
-        /* Use pre-smoothed gains from worker thread */
-        const float lGain = ds->smoothedL;
-        const float rGain = ds->smoothedR;
+        /* Calculate gains directly from VonEntry */
+        const float lG        = clampf(e->leftGain, 0.0f, 2.0f);
+        const float rG        = clampf(e->rightGain, 0.0f, 2.0f);
+        float       avg       = 0.5f * (lG + rG);
+        float       yellBoost = (avg > 1.0f) ? clampf(1.0f + 0.15f * (avg - 1.0f), 1.0f, 1.5f) : 1.0f;
 
-        /* Filters are already updated in worker, just check if we need to apply them */
+        const float lGain = clampf(lG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+        const float rGain = clampf(rG * yellBoost * DIRECT_GAIN_MUL, 0.0f, 2.0f);
+
+        /* Filters are updated in worker, just check if we need to apply them */
         const float occDb = (e->muffledDb < 0.0f) ? -e->muffledDb : 0.0f;
         const int   doMuf = (occDb > 0.1f) ? 1 : 0;
 
