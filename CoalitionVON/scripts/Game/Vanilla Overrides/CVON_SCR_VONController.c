@@ -532,6 +532,9 @@ modded class SCR_VONController
 	float m_fServerDataBuffer = 0;
 	// Dirty-flag tracking: last value of IsTransmitting written to VONData.json.
 	bool m_bLastWrittenTransmitting = false;
+	// Track how many entries were in m_aLocalEntries the last time we wrote to disk.
+	// If the count changes (e.g. the last speaker left range), we must force a write.
+	int m_iLastWrittenEntryCount = 0;
 	override void EOnFixedFrame(IEntity owner, float timeSlice)
 	{
 		super.EOnFixedFrame(owner, timeSlice);
@@ -1184,7 +1187,13 @@ modded class SCR_VONController
 			return;
 		// Dirty flag: if nothing changed since the last write, skip SaveToFile entirely.
 		// JSON serialization still happens in memory (cheap); the disk write is what we avoid.
-		bool dirty = (m_bIsBroadcasting != m_bLastWrittenTransmitting);
+		// Also dirty when the entry count changes — this catches the case where the last
+		// speaker leaves range and is removed from m_aLocalEntries entirely: the foreach
+		// below never runs, so only this count comparison can trigger the flush that removes
+		// their entry from VONData.json and lets TeamSpeak mute them.
+		int currentEntryCount = m_PlayerController.m_aLocalEntries.Count();
+		bool dirty = (m_bIsBroadcasting != m_bLastWrittenTransmitting) ||
+					 (currentEntryCount != m_iLastWrittenEntryCount);
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
 			IEntity soundSource;
@@ -1295,6 +1304,7 @@ modded class SCR_VONController
 		{
 			VONSave.SaveToFile("$profile:/VONData.json");
 			m_bLastWrittenTransmitting = m_bIsBroadcasting;
+			m_iLastWrittenEntryCount = currentEntryCount;
 		}
 	}
 	
