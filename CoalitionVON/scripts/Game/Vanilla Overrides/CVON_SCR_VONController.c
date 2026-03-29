@@ -521,6 +521,44 @@ modded class SCR_VONController
 		if (!m_MenuManager)
 			m_MenuManager = GetGame().GetMenuManager();
 	}
+	
+	//==========================================================================================================================================================================
+	// OnDelete: called by the engine when the PlayerController entity is explicitly removed
+	// (normal disconnect, server kick, mission end). More reliable than the destructor
+	// for normal disconnects; crashes cannot be caught by either.
+	//==========================================================================================================================================================================
+	override void OnDelete(IEntity owner)
+	{
+		// Remove any active broadcasts before cleanup
+		if (m_PlayerController && m_aPlayerIdsBroadcastedTo.Count() > 0)
+		{
+			foreach (int playerId: m_aPlayerIdsBroadcastedTo)
+				m_PlayerController.BroadcastRemoveLocalVONToServer(m_PlayerController.GetPlayerId());
+			m_aPlayerIdsBroadcastedTo.Clear();
+		}
+		
+		// Signal TeamSpeak to return user to their previous channel
+		SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
+		VONServerData.StartObject("ServerData");
+		VONServerData.WriteValue("InGame", false);
+		VONServerData.WriteValue("InGameName", "");
+		VONServerData.WriteValue("TSClientID", 0);
+		VONServerData.WriteValue("TSPluginVersion", "");
+		VONServerData.WriteValue("VONChannelName", "");
+		VONServerData.WriteValue("VONChannelPassword", "");
+		VONServerData.WriteValue("TSServerIp", "");
+		VONServerData.WriteValue("TSServerPassword", "");
+		VONServerData.EndObject();
+		VONServerData.SaveToFile("$profile:/VONServerData.json");
+		
+		// Clear VONData.json so TeamSpeak unmutes all clients
+		SCR_JsonSaveContext VONDataClear = new SCR_JsonSaveContext();
+		VONDataClear.WriteValue("IsTransmitting", false);
+		VONDataClear.SaveToFile("$profile:/VONData.json");
+		
+		super.OnDelete(owner);
+	}
+	
 	//The meat, this is where we determine who we send a VONEntry too and if we've already sent one.
 	//Differentiates behavior for Direct and Radio in here as well. If a player is more than 200m away and you try to use direct he will not receive that direct VONEntry.
 	//==========================================================================================================================================================================
@@ -1309,31 +1347,4 @@ modded class SCR_VONController
 	}
 	
 	
-	//Resets these values so we can leave the channel on teamspeak
-	//It checks if the bool InGame is true, and if so moves you to the voip channel
-	//==========================================================================================================================================================================
-	void ~SCR_VONController()
-	{
-		if (m_aPlayerIdsBroadcastedTo.Count() > 0)
-		{
-			foreach (int playerId: m_aPlayerIdsBroadcastedTo)
-			{
-				m_PlayerController.BroadcastRemoveLocalVONToServer(m_PlayerController.GetPlayerId());
-			}
-			m_aPlayerIdsBroadcastedTo.Clear();
-		}
-		
-		SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
-		VONServerData.StartObject("ServerData");
-		VONServerData.WriteValue("InGame", false);
-		VONServerData.WriteValue("InGameName", "");
-		VONServerData.WriteValue("TSClientID", 0);
-		VONServerData.WriteValue("TSPluginVersion", 0);
-		VONServerData.WriteValue("VONChannelName", "");
-		VONServerData.WriteValue("VONChannelPassword", "");
-		VONServerData.WriteValue("TSServerIp", "");
-		VONServerData.WriteValue("TSServerPassword", "");
-		VONServerData.EndObject();
-		VONServerData.SaveToFile("$profile:/VONServerData.json");
-	}
 }
