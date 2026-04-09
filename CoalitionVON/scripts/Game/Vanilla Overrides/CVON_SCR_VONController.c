@@ -370,7 +370,11 @@ modded class SCR_VONController
 						return;
 					IEntity radio = m_PlayerController.m_aRadios.Get(0);
 					if (radio == null)
+					{
+						//Reinitialize radios cause something is seriously fucked.
+						m_PlayerController.InitializeRadios(m_PlayerController.GetControlledEntity());
 						return;
+					}
 					
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
