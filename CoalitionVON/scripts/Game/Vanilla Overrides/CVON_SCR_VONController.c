@@ -1080,6 +1080,20 @@ modded class SCR_VONController
 	{
 		//Fill in your spectator logic here
 	}
+	
+	bool IsSameLanguage(int localPlayerId, int transmissionPlayerId)
+	{
+		bool sameLanguage = true;
+		if (m_FactionManager)
+			{
+				Faction localFaction = m_FactionManager.GetPlayerFaction(localPlayerId);
+				Faction transmissionFaction = m_FactionManager.GetPlayerFaction(transmissionPlayerId);
+				if (localFaction != transmissionFaction && m_BaseGamemode.IsBabbelEnabled())
+					sameLanguage = false;
+			}
+		
+		return sameLanguage;
+	}
 
 	
 	//VONServerData.JSON
@@ -1260,12 +1274,8 @@ modded class SCR_VONController
 			if (!m_BaseGamemode)
 				m_BaseGamemode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
 			
-			bool sameLanguage = true;
-			if (m_FactionManager)
-			{
-				if (m_FactionManager.GetPlayerFaction(m_PlayerController.GetPlayerId()) != m_FactionManager.GetPlayerFaction(container.m_iPlayerId) && m_BaseGamemode.IsBabbelEnabled())
-					sameLanguage = false;
-			}
+			bool sameLanguage = IsSameLanguage(m_PlayerController.GetPlayerId(), container.m_iPlayerId);
+			
 
 			// Check if this entry differs enough from what was last written (epsilon ~0.5%).
 			const float EPS = 0.005;
