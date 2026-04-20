@@ -59,6 +59,8 @@ modded class SCR_VONController
 	
 	SCR_FactionManager m_FactionManager;
 	
+	bool m_bFirstConnect = false;
+	
 	
 	//All these below are just how we assign keybinds to activate certain VON Transmissions
 	//==========================================================================================================================================================================
@@ -182,6 +184,8 @@ modded class SCR_VONController
 		UpdateSystemState();
 		
 		GetGame().GetCallqueue().CallLater(GetHud, 500, false);
+		
+		
 	}
 	
 	//Change ear keybind
@@ -571,6 +575,12 @@ modded class SCR_VONController
 		m_Camera = m_CameraManager.CurrentCamera();
 		if (!m_Camera)
 			return;
+		
+		if (!m_bFirstConnect)
+		{
+			WriteJSON(true, true);
+			m_bFirstConnect = true;
+		}
 		
 		m_PlayerIdTemp.Clear();
 		m_PlayerManager.GetPlayers(m_PlayerIdTemp);
@@ -1121,7 +1131,7 @@ modded class SCR_VONController
 	// checkServerData: when false, skip the VONServerData.json read entirely.
 	// Called every 50ms but checkServerData is only true once per second to avoid
 	// opening and parsing a file 20 times per second for data that rarely changes.
-	void WriteJSON(bool checkServerData = true)
+	void WriteJSON(bool checkServerData = true, bool firstConnect = false)
 	{
 		if (!GetGame().GetPlayerController())
 			return;
@@ -1314,7 +1324,7 @@ modded class SCR_VONController
 			container.m_bCachedSameLang = sameLanguage;
 			container.m_sCachedFreq    = frequency;
 		}
-		if (dirty)
+		if (dirty || firstConnect)
 		{
 			VONSave.SaveToFile("$profile:/VONData.json");
 			m_bLastWrittenTransmitting = m_bIsBroadcasting;
