@@ -109,10 +109,10 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	//==========================================================================================================================================================================
 	void InitializeChannelId()
 	{
-		SCR_JsonLoadContext JSONLoad = new SCR_JsonLoadContext();
+		JsonLoadContext JSONLoad = new JsonLoadContext();
 		if (!JSONLoad.LoadFromFile("$profile:/VONServerSettings.json"))
 		{
-			SCR_JsonSaveContext ServerJSON = new SCR_JsonSaveContext();
+			JsonSaveContext ServerJSON = new JsonSaveContext();
 			ServerJSON.StartObject("Server Settings");
 			ServerJSON.WriteValue("VONChannelName", "");
 			ServerJSON.WriteValue("VONChannelPassword", "");
@@ -131,7 +131,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			JSONLoad.EndObject();
 			if (!name || !pass || !ip || !serverPass)
 			{
-				SCR_JsonSaveContext ServerJSON = new SCR_JsonSaveContext();
+				JsonSaveContext ServerJSON = new JsonSaveContext();
 				ServerJSON.StartObject("Server Settings");
 				ServerJSON.WriteValue("VONChannelName", m_sTeamSpeakChannelName);
 				ServerJSON.WriteValue("VONChannelPassword", m_sTeamSpeakChannelPassword);

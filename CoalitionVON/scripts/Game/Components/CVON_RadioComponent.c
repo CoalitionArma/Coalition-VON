@@ -442,7 +442,7 @@ class CVON_RadioComponent: ScriptComponent
 			return;
 		if (entity != SCR_PlayerController.GetLocalControlledEntity())
 			return;
-		SCR_JsonSaveContext VONSave = new SCR_JsonSaveContext();
+		JsonSaveContext VONSave = new JsonSaveContext();
 		SCR_BaseGameMode gamemode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
 		if (!gamemode)
 			return;
