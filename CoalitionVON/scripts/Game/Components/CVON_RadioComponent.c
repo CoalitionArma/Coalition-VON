@@ -101,6 +101,12 @@ class CVON_RadioComponent: ScriptComponent
 			return;
 		}
 		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(GetOwner().GetRootParent().FindComponent(FactionAffiliationComponent));
+		if (!factionComp)
+		{
+			Replication.BumpMe();
+			return;
+		}
+
 		string ownerFactionKey = factionComp.GetAffiliatedFactionKey();
 		foreach (CVON_SharedFrequencyObject sharedFreq: CVON_VONGameModeComponent.GetInstance().m_aSharedFrequencies)
 		{
