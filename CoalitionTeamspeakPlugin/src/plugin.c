@@ -3,7 +3,7 @@
  *
  * - DIRECT (VONType=0):
  *     Uses LeftGain/RightGain POSTed over loopback HTTP to 127.0.0.1:VON_HTTP_PORT
- *     (already spatialized by game; see von_http_main/parse_von_body). EXPERIMENTAL:
+ *     (already spatialized by game; see http_server_main/parse_von_body). EXPERIMENTAL:
  *     replaces the old VONData.bin file-poll to keep FileIO off the game's sim thread.
  *     No plugin-side attenuation. We only apply a mild "yell" boost if the
  *     average L/R gain exceeds ~1.0 (interpreted as the game indicating shouting).
@@ -26,8 +26,11 @@
  *
  * - Mic control: IsTransmitting toggles CLIENT_INPUT_DEACTIVATED.
  * - Auto-move to VONChannelName (and optional VONChannelPassword) when InGame==true.
- * - RadioData/ServerData file I/O and channel moves run in a worker thread; VONData
- *   arrives on its own dedicated HTTP listener thread (audio callbacks are pure DSP).
+ *   ServerData (channel/InGame/TSClientID handshake) also arrives over the same loopback
+ *   HTTP listener now ("/serverdata"), replacing the old shared VONServerData.json mailbox:
+ *   the game POSTs its half and gets our TSClientID/version back directly in the response.
+ * - RadioData file I/O and channel moves run in a worker thread; VONData/ServerData
+ *   arrive on their own dedicated HTTP listener thread (audio callbacks are pure DSP).
  *
  * Build (VS, Release|x64):
  *   Compile as C or C++; Link with: Shell32.lib; Ole32.lib
@@ -91,7 +94,6 @@ typedef uint16_t anyID;
 
 /* Worker + move handling */
 #define WORKER_TICK_MS 200
-#define SERVER_WRITE_SUPPRESS_MS 750
 #define MOVE_BACKOFF_MIN_MS 1500
 #define MOVE_BACKOFF_MAX_MS 30000
 
@@ -267,16 +269,6 @@ static void ensureParentDirExists(const char* filePath)
     if (dir[0])
         SHCreateDirectoryExA(NULL, dir, NULL);
 }
-static void buildServerJsonPath(char* outBuf, size_t bufSize)
-{
-    char docs[PATH_BUFSIZE];
-    getDocumentsPath(docs, sizeof(docs));
-    if (!docs[0]) {
-        outBuf[0] = '\0';
-        return;
-    }
-    _snprintf(outBuf, (int)bufSize, "%s%sMy Games%sArmaReforger%sprofile%sVONServerData.json", docs, PATH_SEP, PATH_SEP, PATH_SEP, PATH_SEP);
-}
 static void buildRadioJsonPath(char* outBuf, size_t bufSize)
 {
     char docs[PATH_BUFSIZE];
@@ -321,8 +313,6 @@ static char*  g_vonBuf   = NULL;
 static size_t g_vonCap   = 0;
 static char*  g_radioBuf = NULL;
 static size_t g_radioCap = 0;
-static char*  g_srvBuf   = NULL;
-static size_t g_srvCap   = 0;
 
 static int read_file_reuse(const char* path, char** pBuf, size_t* pCap, long* outSz)
 {
@@ -408,26 +398,30 @@ static RadioSnapshot g_RadioSnap[2] = {0};
 static volatile long g_vonActiveIdx   = 0;
 static volatile long g_radioActiveIdx = 0;
 
-/* ServerData cache */
-static char          g_ServerPath[PATH_BUFSIZE] = {0};
-static int           g_SD_have = 0, g_SD_inGame = 0;
-static char          g_SD_chanName[512]         = {0};
-static char          g_SD_chanPass[512]         = {0};
-static unsigned long g_serverWatchSuppressUntil = 0;
+/* ServerData cache (single-threaded: only worker_main touches these) */
+static int  g_SD_have = 0, g_SD_inGame = 0;
+static char g_SD_chanName[512] = {0};
+static char g_SD_chanPass[512] = {0};
 
-/* Last written snapshot to avoid unnecessary writes */
-static struct {
-    unsigned tsClientID;
-    int      inGame;
-    char     pluginVersionStr[64]; // now stored as string
-    char     chanName[512];
-    char     chanPass[512];
-    int      valid;
-} g_lastServerWritten = {0, 0, {0}, {0}, {0}, 0};
+/* Inbound mailbox from the "/serverdata" HTTP handler (its own thread) into worker_main.
+   Double-buffered + atomic index, the same pattern as g_VonSnap/g_vonActiveIdx, so
+   worker_main can copy the latest POSTed values into g_SD_* above with no locking and
+   no risk of a torn read of these char buffers. */
+typedef struct {
+    int  inGame;
+    char ingameName[512];
+    char chanName[512];
+    char chanPass[512];
+    char serverIp[512];
+    char serverPassword[512];
+} ServerDataInbound;
+static ServerDataInbound g_sdInboundSnap[2]   = {0};
+static volatile long     g_sdInboundActiveIdx = 0;
+static volatile long     g_sdInboundHave      = 0;
 
 /* Paths + watchers */
 static char             g_RadioPath[PATH_BUFSIZE] = {0};
-static WatchedFileState g_serverWatch = {0}, g_radioWatch = {0};
+static WatchedFileState g_radioWatch = {0};
 
 /* Mic + state gate (worker sets; audio reads) */
 static int           g_IsTransmitting = 0, g_LastMicActive = -1;
@@ -1278,18 +1272,61 @@ static int parse_von_body(char* body, VonSnapshot* dst)
     return 1;
 }
 
-static void send_http_response(SOCKET client, int code)
+static void send_http_response(SOCKET client, int code, const char* body)
 {
-    const char* status = (code == 200) ? "200 OK" : (code == 400) ? "400 Bad Request" : "500 Internal Server Error";
-    char resp[256];
-    int len = _snprintf(resp, sizeof(resp), "HTTP/1.1 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status);
-    if (len > 0)
-        send(client, resp, len, 0);
+    const char* status = (code == 200) ? "200 OK" : (code == 400) ? "400 Bad Request" : (code == 404) ? "404 Not Found" : "500 Internal Server Error";
+    size_t bodyLen = body ? strlen(body) : 0;
+    char   head[256];
+    int    headLen = _snprintf(head, sizeof(head), "HTTP/1.1 %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", status, bodyLen);
+    if (headLen > 0)
+        send(client, head, headLen, 0);
+    if (bodyLen > 0)
+        send(client, body, (int)bodyLen, 0);
 }
 
-/* Reads one HTTP request off client, parses its body into g_VonSnap's inactive buffer,
-   and publishes it. Single-threaded owner of g_vonBuf/g_vonCap (this thread only). */
-static void handle_von_http_connection(SOCKET client)
+/* Populates g_VonSnap's inactive buffer from a "/von" POST body and publishes it. */
+static void handle_von_request(char* body)
+{
+    long readIdx  = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
+    long writeIdx = (readIdx ^ 1) & 1;
+    if (parse_von_body(body, &g_VonSnap[writeIdx]))
+        InterlockedExchange(&g_vonActiveIdx, writeIdx);
+}
+
+/* Parses a "/serverdata" POST body ("InGame|InGameName|VONChannelName|VONChannelPassword|
+   TSServerIp|TSServerPassword") into the inactive ServerDataInbound slot and publishes it.
+   Replaces the old shared VONServerData.json mailbox: the game pushes its half here, and we
+   hand back our half (TSClientID + plugin version) directly in the HTTP response below --
+   no more needing both sides to read+write the same file and suppress their own echoes. */
+static void handle_serverdata_request(char* body)
+{
+    char* f = body;
+    char* inGameS   = next_field(&f, '|');
+    char* nameS     = inGameS   ? next_field(&f, '|') : NULL;
+    char* chanNameS = nameS     ? next_field(&f, '|') : NULL;
+    char* chanPassS = chanNameS ? next_field(&f, '|') : NULL;
+    char* srvIpS    = chanPassS ? next_field(&f, '|') : NULL;
+    char* srvPwS    = srvIpS    ? next_field(&f, '|') : NULL;
+    if (!srvPwS)
+        return; /* malformed; leave last-known-good inbound state alone */
+
+    long writeIdx = (InterlockedCompareExchange(&g_sdInboundActiveIdx, 0, 0) ^ 1) & 1;
+    ServerDataInbound* dst = &g_sdInboundSnap[writeIdx];
+    memset(dst, 0, sizeof(*dst));
+    dst->inGame = atoi(inGameS);
+    strncpy(dst->ingameName, nameS, sizeof(dst->ingameName) - 1);
+    strncpy(dst->chanName, chanNameS, sizeof(dst->chanName) - 1);
+    strncpy(dst->chanPass, chanPassS, sizeof(dst->chanPass) - 1);
+    strncpy(dst->serverIp, srvIpS, sizeof(dst->serverIp) - 1);
+    strncpy(dst->serverPassword, srvPwS, sizeof(dst->serverPassword) - 1);
+
+    InterlockedExchange(&g_sdInboundActiveIdx, writeIdx);
+    InterlockedExchange(&g_sdInboundHave, 1);
+}
+
+/* Reads one HTTP request off client, dispatches it by path, and responds.
+   Single-threaded owner of g_vonBuf/g_vonCap (this thread only). */
+static void handle_http_connection(SOCKET client)
 {
     char headerBuf[8192];
     int  total = 0;
@@ -1305,9 +1342,24 @@ static void handle_von_http_connection(SOCKET client)
 
     char* headerEnd = strstr(headerBuf, "\r\n\r\n");
     if (!headerEnd) {
-        send_http_response(client, 400);
+        send_http_response(client, 400, NULL);
         return;
     }
+
+    /* Request line: "POST /von HTTP/1.1" -- pull out the path token. */
+    char path[64] = {0};
+    {
+        char* sp1 = strchr(headerBuf, ' ');
+        char* sp2 = sp1 ? strchr(sp1 + 1, ' ') : NULL;
+        if (sp1 && sp2 && sp2 > sp1) {
+            size_t plen = (size_t)(sp2 - (sp1 + 1));
+            if (plen >= sizeof(path))
+                plen = sizeof(path) - 1;
+            memcpy(path, sp1 + 1, plen);
+            path[plen] = '\0';
+        }
+    }
+
     int headerLen = (int)(headerEnd - headerBuf) + 4;
     int haveInBuf = total - headerLen;
 
@@ -1316,7 +1368,7 @@ static void handle_von_http_connection(SOCKET client)
         clHeader = strstr(headerBuf, "content-length:");
     int contentLength = clHeader ? atoi(clHeader + 15) : 0;
     if (contentLength <= 0 || contentLength > 4 * 1024 * 1024) {
-        send_http_response(client, 400);
+        send_http_response(client, 400, NULL);
         return;
     }
 
@@ -1324,7 +1376,7 @@ static void handle_von_http_connection(SOCKET client)
         size_t newCap = (size_t)contentLength + 1024;
         char*  nb     = (char*)realloc(g_vonBuf, newCap);
         if (!nb) {
-            send_http_response(client, 500);
+            send_http_response(client, 500, NULL);
             return;
         }
         g_vonBuf = nb;
@@ -1337,32 +1389,43 @@ static void handle_von_http_connection(SOCKET client)
     while (have < contentLength) {
         int n = recv(client, g_vonBuf + have, contentLength - have, 0);
         if (n <= 0) {
-            send_http_response(client, 400);
+            send_http_response(client, 400, NULL);
             return;
         }
         have += n;
     }
     g_vonBuf[contentLength] = '\0';
 
-    long readIdx  = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
-    long writeIdx = (readIdx ^ 1) & 1;
-    if (parse_von_body(g_vonBuf, &g_VonSnap[writeIdx]))
-        InterlockedExchange(&g_vonActiveIdx, writeIdx);
+    if (strcmp(path, "/von") == 0) {
+        handle_von_request(g_vonBuf);
+        send_http_response(client, 200, NULL);
+    } else if (strcmp(path, "/serverdata") == 0) {
+        handle_serverdata_request(g_vonBuf);
 
-    send_http_response(client, 200);
+        anyID myID = 0;
+        uint64 sch = ts3Functions.getCurrentServerConnectionHandlerID();
+        if (sch)
+            ts3Functions.getClientID(sch, &myID);
+
+        char respBody[128];
+        _snprintf(respBody, sizeof(respBody), "%u|%s", (unsigned)myID, ts3plugin_version());
+        send_http_response(client, 200, respBody);
+    } else {
+        send_http_response(client, 404, NULL);
+    }
 }
 
 static HANDLE g_vonHttpThread   = NULL;
 static SOCKET g_vonListenSocket = INVALID_SOCKET;
 
-static DWORD WINAPI von_http_main(LPVOID param)
+static DWORD WINAPI http_server_main(LPVOID param)
 {
     (void)param;
     for (;;) {
         SOCKET client = accept(g_vonListenSocket, NULL, NULL);
         if (client == INVALID_SOCKET)
             break; /* listen socket was closed by ts3plugin_shutdown */
-        handle_von_http_connection(client);
+        handle_http_connection(client);
         closesocket(client);
     }
     return 0;
@@ -1394,14 +1457,14 @@ static int start_von_http_server(void)
         return 0;
     }
 
-    g_vonHttpThread = CreateThread(NULL, 0, von_http_main, NULL, 0, NULL);
+    g_vonHttpThread = CreateThread(NULL, 0, http_server_main, NULL, 0, NULL);
     return g_vonHttpThread != NULL;
 }
 
 static void stop_von_http_server(void)
 {
     if (g_vonListenSocket != INVALID_SOCKET) {
-        closesocket(g_vonListenSocket); /* unblocks accept() in von_http_main */
+        closesocket(g_vonListenSocket); /* unblocks accept() in http_server_main */
         g_vonListenSocket = INVALID_SOCKET;
     }
     if (g_vonHttpThread) {
@@ -1544,149 +1607,29 @@ static void reset_mic_state(uint64 sch)
 }
 
 
-static void read_serverdata_from_disk(void)
+/* Copies the latest "/serverdata" POST (if any) from the inbound mailbox into g_SD_*.
+   Only worker_main calls this, so g_SD_* stays single-threaded exactly as before --
+   the HTTP handler thread never touches these directly. */
+static void consume_serverdata_inbound(void)
 {
-    if (!g_ServerPath[0])
-        return;
-    if (GetTickCount() < g_serverWatchSuppressUntil)
-        return; /* ignore own recent writes */
-
-    long sz = 0;
-    if (!read_file_reuse(g_ServerPath, &g_srvBuf, &g_srvCap, &sz))
+    if (!InterlockedCompareExchange(&g_sdInboundHave, 0, 0))
         return;
 
-    cJSON* serverDataRootJSON = cJSON_Parse(g_srvBuf);
-    if (serverDataRootJSON == NULL) {
-        const char* error = cJSON_GetErrorPtr();
-        if (error != NULL) {
-            logf("Error reading VONServerData: %s\n", error);
-        }
-        return;
-    }
+    long idx = InterlockedCompareExchange(&g_sdInboundActiveIdx, 0, 0);
+    const ServerDataInbound* src = &g_sdInboundSnap[idx];
 
-    int inGame = g_SD_inGame;
-    char* chanName = NULL;
-    char* chanPass = NULL;
-
-    cJSON* serverDataJSON = cJSON_GetObjectItem(serverDataRootJSON, "ServerData");
-    if (cJSON_IsObject(serverDataJSON)) {
-        cJSON* inGameJSON = cJSON_GetObjectItem(serverDataJSON, "InGame");
-        if (cJSON_IsBool(inGameJSON)) {
-            inGame = inGameJSON->valueint;
-        }
-
-        cJSON* chanNameJSON = cJSON_GetObjectItem(serverDataJSON, "VONChannelName");
-        if (cJSON_IsString(chanNameJSON)) {
-            chanName = chanNameJSON->valuestring;
-            trim_inplace(chanName);
-        }
-
-        cJSON* chanPassJSON = cJSON_GetObjectItem(serverDataJSON, "VONChannelPassword");
-        if (cJSON_IsString(chanPassJSON)) {
-            chanPass = chanPassJSON->valuestring;
-            trim_inplace(chanPass);
-        }
-
-        g_SD_have   = 1;
-        g_SD_inGame = inGame;
-        if (chanName) {
-            strncpy(g_SD_chanName, chanName, sizeof(g_SD_chanName) - 1);
-            g_SD_chanName[sizeof(g_SD_chanName) - 1] = '\0';
-        }
-        if (chanPass) {
-            strncpy(g_SD_chanPass, chanPass, sizeof(g_SD_chanPass) - 1);
-            g_SD_chanPass[sizeof(g_SD_chanPass) - 1] = '\0';
-        }
-        cJSON* ipJSON = cJSON_GetObjectItem(serverDataJSON, "TSServerIp");
-        if (cJSON_IsString(ipJSON)) {
-            strncpy(g_SD_serverIp, ipJSON->valuestring, sizeof(g_SD_serverIp) - 1);
-            trim_inplace(g_SD_serverIp);
-        }
-
-        cJSON* pwJSON = cJSON_GetObjectItem(serverDataJSON, "TSServerPassword");
-        if (cJSON_IsString(pwJSON)) {
-            strncpy(g_SD_serverPassword, pwJSON->valuestring, sizeof(g_SD_serverPassword) - 1);
-            trim_inplace(g_SD_serverPassword);
-        }
-
-        cJSON* nickJSON = cJSON_GetObjectItem(serverDataJSON, "InGameName");
-        if (cJSON_IsString(nickJSON)) {
-            strncpy(g_SD_ingameName, nickJSON->valuestring, sizeof(g_SD_ingameName) - 1);
-            trim_inplace(g_SD_ingameName);
-        }
-
-    }
-
-    cJSON_Delete(serverDataRootJSON);
-}
-
-static void write_serverdata_if_changed(uint64 sch)
-{
-    if (!g_ServerPath[0])
-        return;
-
-    anyID myID = 0;
-    if (ts3Functions.getClientID(sch, &myID) != ERROR_ok)
-        myID = 0;
-
-    const char* pvStr = ts3plugin_version();
-
-    int needWrite = 0;
-    if (!g_lastServerWritten.valid)
-        needWrite = 1;
-    else if (g_lastServerWritten.tsClientID != (unsigned)myID)
-        needWrite = 1;
-    else if (g_lastServerWritten.inGame != g_SD_inGame)
-        needWrite = 1;
-    else if (strcmp(g_lastServerWritten.pluginVersionStr, pvStr) != 0)
-        needWrite = 1;
-    else if (strcmp(g_lastServerWritten.chanName, g_SD_chanName) != 0)
-        needWrite = 1;
-    else if (strcmp(g_lastServerWritten.chanPass, g_SD_chanPass) != 0)
-        needWrite = 1;
-
-    if (!needWrite)
-        return;
-
-    ensureParentDirExists(g_ServerPath);
-
-    // Build new JSON object but preserve what Arma set
-    cJSON* serverDataJSON = cJSON_CreateObject();
-
-    // Fields the game cares about
-    cJSON_AddStringToObject(serverDataJSON, "TSServerIp", g_SD_serverIp);
-    cJSON_AddStringToObject(serverDataJSON, "TSServerPassword", g_SD_serverPassword);
-    cJSON_AddStringToObject(serverDataJSON, "InGameName", g_SD_ingameName);
-
-    // Fields the plugin manages
-    cJSON_AddBoolToObject(serverDataJSON, "InGame", g_SD_inGame);
-    cJSON_AddNumberToObject(serverDataJSON, "TSClientID", myID);
-    cJSON_AddStringToObject(serverDataJSON, "TSPluginVersion", pvStr);
-    cJSON_AddStringToObject(serverDataJSON, "VONChannelName", g_SD_chanName);
-    cJSON_AddStringToObject(serverDataJSON, "VONChannelPassword", g_SD_chanPass);
-
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddItemToObject(root, "ServerData", serverDataJSON);
-
-    char* out = cJSON_Print(root);
-    if (out) {
-        FILE* wf = fopen(g_ServerPath, "wb");
-        if (wf) {
-            fprintf(wf, "%s", out);
-            fclose(wf);
-        }
-        free(out);
-    }
-    cJSON_Delete(root);
-
-    g_lastServerWritten.tsClientID = (unsigned)myID;
-    g_lastServerWritten.inGame     = g_SD_inGame;
-    strncpy(g_lastServerWritten.pluginVersionStr, pvStr, sizeof(g_lastServerWritten.pluginVersionStr) - 1);
-    strncpy(g_lastServerWritten.chanName, g_SD_chanName, sizeof(g_lastServerWritten.chanName) - 1);
-    strncpy(g_lastServerWritten.chanPass, g_SD_chanPass, sizeof(g_lastServerWritten.chanPass) - 1);
-    g_lastServerWritten.valid = 1;
-
-    g_serverWatchSuppressUntil = GetTickCount() + SERVER_WRITE_SUPPRESS_MS;
+    g_SD_have   = 1;
+    g_SD_inGame = src->inGame;
+    strncpy(g_SD_chanName, src->chanName, sizeof(g_SD_chanName) - 1);
+    g_SD_chanName[sizeof(g_SD_chanName) - 1] = '\0';
+    strncpy(g_SD_chanPass, src->chanPass, sizeof(g_SD_chanPass) - 1);
+    g_SD_chanPass[sizeof(g_SD_chanPass) - 1] = '\0';
+    strncpy(g_SD_serverIp, src->serverIp, sizeof(g_SD_serverIp) - 1);
+    g_SD_serverIp[sizeof(g_SD_serverIp) - 1] = '\0';
+    strncpy(g_SD_serverPassword, src->serverPassword, sizeof(g_SD_serverPassword) - 1);
+    g_SD_serverPassword[sizeof(g_SD_serverPassword) - 1] = '\0';
+    strncpy(g_SD_ingameName, src->ingameName, sizeof(g_SD_ingameName) - 1);
+    g_SD_ingameName[sizeof(g_SD_ingameName) - 1] = '\0';
 }
 
 
@@ -2091,15 +2034,13 @@ static unsigned long WINAPI worker_main(LPVOID param)
         unsigned long now = GetTickCount();
         uint64 sch = ts3Functions.getCurrentServerConnectionHandlerID();
 
-        /* ---------------- ServerData reload/write ---------------- */
+        /* ---------------- ServerData reload ---------------- */
+        /* The game now POSTs to "/serverdata" and gets our TSClientID/version back directly
+           in the HTTP response (see handle_serverdata_request), so there's nothing to write
+           here anymore -- just pick up whatever the HTTP thread last published. */
         if (now >= g_nextServerReloadTick) {
             g_nextServerReloadTick = now + SERVERDATA_RELOAD_MS;
-            if (now >= g_serverWatchSuppressUntil) {
-                FILETIME wt;
-                if (g_ServerPath[0] && file_modified_since_last(g_ServerPath, &g_serverWatch, &wt))
-                    read_serverdata_from_disk();
-            }
-            write_serverdata_if_changed(sch);
+            consume_serverdata_inbound();
         }
 
         /* ---------------- Auto-connect if IP changed ---------------- */
@@ -2179,7 +2120,7 @@ static unsigned long WINAPI worker_main(LPVOID param)
 
         /* ---------------- Mute enforcement ---------------- */
         /* VONData itself is no longer polled here -- it arrives via an async HTTP POST
-           handled on its own thread (von_http_main) and published straight into
+           handled on its own thread (http_server_main) and published straight into
            g_VonSnap/g_vonActiveIdx. This tick just keeps DirectState/mute enforcement
            running on a steady cadence. */
         if (now >= g_nextMuteEnforceTick) {
@@ -2272,24 +2213,19 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
 {
     InitializeCriticalSection(&g_directLock);
 
-    buildServerJsonPath(g_ServerPath, sizeof(g_ServerPath));
     buildRadioJsonPath(g_RadioPath, sizeof(g_RadioPath));
 
-    if (g_ServerPath[0])
-        ensureParentDirExists(g_ServerPath);
     if (g_RadioPath[0])
         ensureParentDirExists(g_RadioPath);
 
-    g_LastCount                = 0;
+    g_LastCount               = 0;
     memset(g_Last, 0, sizeof(g_Last));  /* Clear client state tracking */
-    g_serverWatch.loadedOnce   = 0;
-    g_radioWatch.loadedOnce    = 0;
-    g_SD_have                  = 0;
-    g_SD_inGame                = 0;
-    g_SD_chanName[0]           = '\0';
-    g_SD_chanPass[0]           = '\0';
-    g_serverWatchSuppressUntil = 0;
-    g_lastServerWritten.valid  = 0;
+    g_radioWatch.loadedOnce   = 0;
+    g_SD_have                 = 0;
+    g_SD_inGame               = 0;
+    g_SD_chanName[0]          = '\0';
+    g_SD_chanPass[0]          = '\0';
+    InterlockedExchange(&g_sdInboundHave, 0);
     InterlockedExchange(&g_inVonActiveFlag, 0);
 
        g_directCount = 0;
@@ -2309,9 +2245,6 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
     if (ts3Functions.getCurrentServerConnectionHandlerID()) {
         apply_proximity_muting(ts3Functions.getCurrentServerConnectionHandlerID());
     }
-    read_serverdata_from_disk();
-    write_serverdata_if_changed(0);
-
     if (!start_von_http_server()) {
         logf("[CRF] VONData HTTP listener failed to start on 127.0.0.1:%d\n", VON_HTTP_PORT);
     }
@@ -2357,11 +2290,6 @@ PLUGINS_EXPORTDLL void ts3plugin_shutdown()
         free(g_radioBuf);
         g_radioBuf = NULL;
         g_radioCap = 0;
-    }
-    if (g_srvBuf) {
-        free(g_srvBuf);
-        g_srvBuf = NULL;
-        g_srvCap = 0;
     }
     DeleteCriticalSection(&g_directLock);
 }

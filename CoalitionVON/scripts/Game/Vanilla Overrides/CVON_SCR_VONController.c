@@ -535,8 +535,8 @@ modded class SCR_VONController
 	float m_fWriteTeamspeakClientIdCooldown = 0;
 	ref array<int> m_PlayerIdTemp = {};
 	float m_fHeadCacheBuffer = 0;
-	// VONServerData.json only needs to be checked at ~1 s; reading it every 50 ms
-	// was 20 unnecessary file reads per second just to detect a TSClientID update.
+	// ServerData only needs to be POSTed at ~1s; sending it every 50ms would be
+	// 20 unnecessary requests per second just to detect a TSClientID update.
 	float m_fServerDataBuffer = 0;
 	// Dirty-flag tracking: last value of IsTransmitting POSTed to the local TS plugin.
 	bool m_bLastWrittenTransmitting = false;
@@ -564,6 +564,7 @@ modded class SCR_VONController
 
 	RestContext      m_VONRestContext; // engine-owned/pooled per URL; not script ref-counted
 	ref RestCallback m_VONRestCallback;
+	ref RestCallback m_ServerDataRestCallback;
 
 	//Fire-and-forget: log failures so we can tell during testing whether the local POST
 	//is even reaching the plugin's HTTP listener.
@@ -577,6 +578,31 @@ modded class SCR_VONController
 		// No response payload to act on; this is a one-way push.
 	}
 
+	void OnServerDataPostError(RestCallback cb)
+	{
+		Print("[CVON] ServerData POST failed, result=" + typename.EnumToString(ERestResult, cb.GetRestResult()));
+	}
+
+	//Response body is "<tsClientId>|<pluginVersion>" -- the plugin's half of the handshake,
+	//returned directly instead of us reading it back from a shared VONServerData.json file.
+	void OnServerDataPostSuccess(RestCallback cb)
+	{
+		string data = cb.GetData();
+		int pipeIdx = data.IndexOf("|");
+		if (pipeIdx <= 0)
+			return;
+
+		int tsClientId = data.Substring(0, pipeIdx).ToInt();
+		string pluginVersion = data.Substring(pipeIdx + 1, data.Length() - pipeIdx - 1);
+
+		if (m_PlayerController.GetTeamspeakClientId() != tsClientId && m_fWriteTeamspeakClientIdCooldown <= 0)
+		{
+			m_fWriteTeamspeakClientIdCooldown = 1;
+			m_PlayerController.SetTeamspeakClientId(tsClientId);
+		}
+		m_PlayerController.m_sTeamspeakPluginVersion = pluginVersion;
+	}
+
 	private void EnsureVONRestSetup()
 	{
 		if (m_VONRestContext)
@@ -585,6 +611,25 @@ modded class SCR_VONController
 		m_VONRestCallback = new RestCallback();
 		m_VONRestCallback.SetOnSuccess(OnVONPostSuccess);
 		m_VONRestCallback.SetOnError(OnVONPostError);
+		m_ServerDataRestCallback = new RestCallback();
+		m_ServerDataRestCallback.SetOnSuccess(OnServerDataPostSuccess);
+		m_ServerDataRestCallback.SetOnError(OnServerDataPostError);
+	}
+
+	//Replaces the old shared VONServerData.json mailbox: POST our half (channel/InGame state)
+	//and the plugin hands back its half (TSClientID/version) directly in the HTTP response,
+	//via OnServerDataPostSuccess above -- no more file read to detect what the plugin wrote.
+	private void PostServerData()
+	{
+		EnsureVONRestSetup();
+		if (!m_VONRestContext)
+			return;
+
+		string payload = "1|" + m_PlayerManager.GetPlayerName(m_PlayerController.GetPlayerId());
+		payload += "|" + m_VONGameModeComponent.m_sTeamSpeakChannelName + "|" + m_VONGameModeComponent.m_sTeamSpeakChannelPassword;
+		payload += "|" + m_VONGameModeComponent.m_sTeamSpeakServerIP + "|" + m_VONGameModeComponent.m_sTeamSpeakServerPassword;
+
+		m_VONRestContext.POST(m_ServerDataRestCallback, "/serverdata", payload);
 	}
 
 	//float.ToString() is locale-dependent (some locales render "0.73" as "0,73"), which would
@@ -1208,71 +1253,16 @@ modded class SCR_VONController
 	//Teamspeak's HTTP listener parses the data and compares it using the clientId to see if they should hear this baffoon ->
 	//The entry is removed from the local array and is no longer POSTed, there for teamspeak just mutes that client as he has no data for them.
 	//==========================================================================================================================================================================
-	// checkServerData: when false, skip the VONServerData.json read entirely.
-	// Called every 50ms but checkServerData is only true once per second to avoid
-	// opening and parsing a file 20 times per second for data that rarely changes.
+	// checkServerData: when false, skip the ServerData POST entirely.
+	// Called every 50ms but checkServerData is only true once per second -- no need for
+	// a separate dirty-check anymore (that existed to avoid redundant file writes; a
+	// once-a-second async POST is cheap enough to just always send).
 	void UpdateVONData(bool checkServerData = true, bool firstConnect = false)
 	{
 		if (!GetGame().GetPlayerController())
 			return;
 		if (checkServerData)
-		{
-			SCR_JsonLoadContext VONLoad = new SCR_JsonLoadContext();
-			if (!VONLoad.LoadFromFile("$profile:/VONServerData.json"))
-			{
-				SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
-				VONServerData.StartObject("ServerData");
-				VONServerData.SetMaxDecimalPlaces(1);
-				VONServerData.WriteValue("InGame", true);
-				VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(m_PlayerController.GetPlayerId()));
-				VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
-				VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
-				VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
-				VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
-				VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
-				VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
-				VONServerData.EndObject();
-				VONServerData.SaveToFile("$profile:/VONServerData.json");
-			}
-			else
-			{
-				string ChannelName;
-				string ChannelPassword;
-				int TSClientId = 0;
-				bool InGame;
-				string gameName;
-				VONLoad.StartObject("ServerData");
-				VONLoad.ReadValue("InGame", InGame);
-				VONLoad.ReadValue("VONChannelName", ChannelName);
-				VONLoad.ReadValue("VONChannelPassword", ChannelPassword);
-				VONLoad.ReadValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
-				VONLoad.ReadValue("TSClientID", TSClientId);
-				VONLoad.ReadValue("InGameName", gameName);
-				if (m_PlayerController.GetTeamspeakClientId() != TSClientId && m_fWriteTeamspeakClientIdCooldown <= 0)
-				{
-					m_fWriteTeamspeakClientIdCooldown = 1;
-					m_PlayerController.SetTeamspeakClientId(TSClientId);
-				}
-				
-				VONLoad.EndObject();
-				if (gameName == "" || ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
-				{
-					SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
-					VONServerData.StartObject("ServerData");
-					VONServerData.SetMaxDecimalPlaces(1);
-					VONServerData.WriteValue("InGame", true);
-					VONServerData.WriteValue("InGameName", m_PlayerManager.GetPlayerName(m_PlayerController.GetPlayerId()));
-					VONServerData.WriteValue("TSClientID", m_PlayerController.GetTeamspeakClientId());
-					VONServerData.WriteValue("TSPluginVersion", m_PlayerController.m_sTeamspeakPluginVersion);
-					VONServerData.WriteValue("VONChannelName", m_VONGameModeComponent.m_sTeamSpeakChannelName);
-					VONServerData.WriteValue("VONChannelPassword", m_VONGameModeComponent.m_sTeamSpeakChannelPassword);
-					VONServerData.WriteValue("TSServerIp", m_VONGameModeComponent.m_sTeamSpeakServerIP);
-					VONServerData.WriteValue("TSServerPassword", m_VONGameModeComponent.m_sTeamSpeakServerPassword);
-					VONServerData.EndObject();
-					VONServerData.SaveToFile("$profile:/VONServerData.json");
-				}
-			}
-		}
+			PostServerData();
 		#ifdef ENABLE_DIAG
 		#else
 		//Hijack this whole process to load the initial warning menu
@@ -1434,17 +1424,10 @@ modded class SCR_VONController
 			m_aPlayerIdsBroadcastedTo.Clear();
 		}
 		
-		SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
-		VONServerData.StartObject("ServerData");
-		VONServerData.WriteValue("InGame", false);
-		VONServerData.WriteValue("InGameName", "");
-		VONServerData.WriteValue("TSClientID", 0);
-		VONServerData.WriteValue("TSPluginVersion", 0);
-		VONServerData.WriteValue("VONChannelName", "");
-		VONServerData.WriteValue("VONChannelPassword", "");
-		VONServerData.WriteValue("TSServerIp", "");
-		VONServerData.WriteValue("TSServerPassword", "");
-		VONServerData.EndObject();
-		VONServerData.SaveToFile("$profile:/VONServerData.json");
+		// Tell the plugin we're leaving so it moves us out of the VON channel; fire-and-forget,
+		// same as the rest of the ServerData handshake.
+		EnsureVONRestSetup();
+		if (m_VONRestContext)
+			m_VONRestContext.POST(m_VONRestCallback, "/serverdata", "0|||||");
 	}
 }
