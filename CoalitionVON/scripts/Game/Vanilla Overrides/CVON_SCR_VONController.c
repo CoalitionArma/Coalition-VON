@@ -538,17 +538,19 @@ modded class SCR_VONController
 	// VONServerData.json only needs to be checked at ~1 s; reading it every 50 ms
 	// was 20 unnecessary file reads per second just to detect a TSClientID update.
 	float m_fServerDataBuffer = 0;
-	// Dirty-flag tracking: last value of IsTransmitting written to VONData.bin.
+	// Dirty-flag tracking: last value of IsTransmitting POSTed to the local TS plugin.
 	bool m_bLastWrittenTransmitting = false;
-	// Track how many entries were in m_aLocalEntries the last time we wrote to disk.
-	// If the count changes (e.g. the last speaker left range), we must force a write.
+	// Track how many entries were in m_aLocalEntries the last time we posted.
+	// If the count changes (e.g. the last speaker left range), we must force a post.
 	int m_iLastWrittenEntryCount = 0;
 
-	// VONData.bin wire format: fixed-size binary records instead of JSON text.
-	// Avoids per-frame string formatting on write and JSON parsing on the TS plugin's read side.
-	static const int CVON_VONDATA_MAGIC = 0x314E4F56; // "VON1", written little-endian
-	static const int CVON_VONDATA_FREQ_LEN = 32;
-	static const int CVON_VONDATA_FACTION_LEN = 32;
+	// VONData is now pushed over a loopback HTTP POST to the TS plugin instead of being
+	// written to disk: FileIO calls block the calling (sim) thread, and any OS-level hiccup
+	// on that synchronous write (AV hooking CreateFile, NTFS contention, etc.) stalls the
+	// engine tick. RestContext.POST (non-"_now" form) is documented as async/non-blocking.
+	// EXPERIMENTAL: unverified whether RestApi works from client scripts against a loopback
+	// host — test in Workbench before relying on this.
+	static const int CVON_VON_HTTP_PORT = 47091;
 	ref array<int>    m_aBinClientId = {};
 	ref array<int>    m_aBinVonType = {};
 	ref array<float>  m_aBinLeftGain = {};
@@ -560,48 +562,64 @@ modded class SCR_VONController
 	ref array<string> m_aBinFrequency = {};
 	ref array<string> m_aBinFactionKey = {};
 
-	//Pads/truncates a string to exactly len characters so the fixed-size binary record
-	//stays byte-aligned with the native plugin's wire struct.
-	private string PadFixed(string s, int len)
+	RestContext      m_VONRestContext; // engine-owned/pooled per URL; not script ref-counted
+	ref RestCallback m_VONRestCallback;
+
+	//Fire-and-forget: log failures so we can tell during testing whether the local POST
+	//is even reaching the plugin's HTTP listener.
+	void OnVONPostError(RestCallback cb)
 	{
-		if (s.Length() >= len)
-			return s.Substring(0, len);
-		string result = s;
-		while (result.Length() < len)
-			result += "\0";
-		return result;
+		Print("[CVON] VONData POST failed, result=" + typename.EnumToString(ERestResult, cb.GetRestResult()));
 	}
 
-	//Writes the accumulated m_aBin* entries to VONData.bin as fixed-size binary records.
-	private void WriteVONDataBinary(bool isTransmitting, int count)
+	void OnVONPostSuccess(RestCallback cb)
 	{
-		FileHandle file = FileIO.OpenFile("$profile:/VONData.bin", FileMode.WRITE);
-		if (!file)
+		// No response payload to act on; this is a one-way push.
+	}
+
+	private void EnsureVONRestSetup()
+	{
+		if (m_VONRestContext)
+			return;
+		m_VONRestContext = GetGame().GetRestApi().GetContext("http://127.0.0.1:" + CVON_VON_HTTP_PORT.ToString());
+		m_VONRestCallback = new RestCallback();
+		m_VONRestCallback.SetOnSuccess(OnVONPostSuccess);
+		m_VONRestCallback.SetOnError(OnVONPostError);
+	}
+
+	//float.ToString() is locale-dependent (some locales render "0.73" as "0,73"), which would
+	//silently corrupt both our "|" framing expectations and the native atof() parser. Scale to
+	//a fixed-point integer (3 decimal places, matching the old JSON precision) so only ints ever
+	//go through ToString().
+	private int ToFixedPoint(float v)
+	{
+		return (int)(v * 1000.0 + 0.5);
+	}
+
+	//Builds a compact pipe/newline-delimited text payload (safe over the string-based REST
+	//body, unlike raw binary) from the accumulated m_aBin* entries and POSTs it async.
+	private void PostVONData(bool isTransmitting, int count)
+	{
+		EnsureVONRestSetup();
+		if (!m_VONRestContext)
 			return;
 
 		int txFlag = 0;
 		if (isTransmitting)
 			txFlag = 1;
 
-		file.Write(CVON_VONDATA_MAGIC, 4);
-		file.Write(txFlag, 4);
-		file.Write(count, 4);
-
+		string payload = txFlag.ToString() + "|" + count.ToString() + "\n";
 		for (int i = 0; i < count; i++)
 		{
-			file.Write(m_aBinClientId[i], 4);
-			file.Write(m_aBinVonType[i], 4);
-			file.Write(m_aBinLeftGain[i], 4);
-			file.Write(m_aBinRightGain[i], 4);
-			file.Write(m_aBinMuffledDb[i], 4);
-			file.Write(m_aBinConnQ[i], 4);
-			file.Write(m_aBinBehindIntensity[i], 4);
-			file.Write(m_aBinSameLanguage[i], 4);
-			file.Write(PadFixed(m_aBinFrequency[i], CVON_VONDATA_FREQ_LEN), CVON_VONDATA_FREQ_LEN);
-			file.Write(PadFixed(m_aBinFactionKey[i], CVON_VONDATA_FACTION_LEN), CVON_VONDATA_FACTION_LEN);
+			string line = m_aBinClientId[i].ToString() + "|" + m_aBinVonType[i].ToString();
+			line += "|" + ToFixedPoint(m_aBinLeftGain[i]).ToString() + "|" + ToFixedPoint(m_aBinRightGain[i]).ToString();
+			line += "|" + m_aBinMuffledDb[i].ToString() + "|" + ToFixedPoint(m_aBinConnQ[i]).ToString();
+			line += "|" + ToFixedPoint(m_aBinBehindIntensity[i]).ToString() + "|" + m_aBinSameLanguage[i].ToString();
+			line += "|" + m_aBinFrequency[i] + "|" + m_aBinFactionKey[i];
+			payload += line + "\n";
 		}
 
-		file.Close();
+		m_VONRestContext.POST(m_VONRestCallback, "/von", payload);
 	}
 
 	override void EOnFixedFrame(IEntity owner, float timeSlice)
@@ -1185,9 +1203,10 @@ modded class SCR_VONController
 	
 	//Chain from broadcast is
 	//You broadcast to selected players -> They receive it in their player controller and add it locally ->
-	//This UpdateVONData() method is being constantly called it will then write the data to VONData.bin for teamspeak to interpret ->
-	//Teamspeak reads VONData.bin, parses the data and compares it using the clientId to see if they should hear this baffoon ->
-	//The entry is removed from the local array and is no longer written to VONData.bin, there for teamspeak just mutes that client as he has no data in the file.
+	//This UpdateVONData() method is being constantly called it will then POST the data over a loopback
+	//HTTP request to the plugin's local listener for teamspeak to interpret ->
+	//Teamspeak's HTTP listener parses the data and compares it using the clientId to see if they should hear this baffoon ->
+	//The entry is removed from the local array and is no longer POSTed, there for teamspeak just mutes that client as he has no data for them.
 	//==========================================================================================================================================================================
 	// checkServerData: when false, skip the VONServerData.json read entirely.
 	// Called every 50ms but checkServerData is only true once per second to avoid
@@ -1286,7 +1305,7 @@ modded class SCR_VONController
 		// Also dirty when the entry count changes — this catches the case where the last
 		// speaker leaves range and is removed from m_aLocalEntries entirely: the foreach
 		// below never runs, so only this count comparison can trigger the flush that removes
-		// their entry from VONData.bin and lets TeamSpeak mute them.
+		// their entry from the POSTed payload and lets TeamSpeak mute them.
 		int currentEntryCount = m_PlayerController.m_aLocalEntries.Count();
 		bool dirty = (m_bIsBroadcasting != m_bLastWrittenTransmitting) ||
 					 (currentEntryCount != m_iLastWrittenEntryCount);
@@ -1394,7 +1413,7 @@ modded class SCR_VONController
 		}
 		if (dirty || firstConnect)
 		{
-			WriteVONDataBinary(m_bIsBroadcasting, m_aBinClientId.Count());
+			PostVONData(m_bIsBroadcasting, m_aBinClientId.Count());
 			m_bLastWrittenTransmitting = m_bIsBroadcasting;
 			m_iLastWrittenEntryCount = currentEntryCount;
 		}

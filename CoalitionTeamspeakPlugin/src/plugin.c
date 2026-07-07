@@ -2,7 +2,9 @@
  * CRF TeamSpeak 3 Proximity VOIP Plugin (Windows-only, Arma Reforger)
  *
  * - DIRECT (VONType=0):
- *     Uses LeftGain/RightGain from VONData.bin (already spatialized by game).
+ *     Uses LeftGain/RightGain POSTed over loopback HTTP to 127.0.0.1:VON_HTTP_PORT
+ *     (already spatialized by game; see von_http_main/parse_von_body). EXPERIMENTAL:
+ *     replaces the old VONData.bin file-poll to keep FileIO off the game's sim thread.
  *     No plugin-side attenuation. We only apply a mild "yell" boost if the
  *     average L/R gain exceeds ~1.0 (interpreted as the game indicating shouting).
  *     NEW: Applies a muffle (low-pass) driven by MuffledDecibels (negative dB):
@@ -24,7 +26,8 @@
  *
  * - Mic control: IsTransmitting toggles CLIENT_INPUT_DEACTIVATED.
  * - Auto-move to VONChannelName (and optional VONChannelPassword) when InGame==true.
- * - I/O and channel moves run in a 500 ms worker thread (audio callbacks are pure DSP).
+ * - RadioData/ServerData file I/O and channel moves run in a worker thread; VONData
+ *   arrives on its own dedicated HTTP listener thread (audio callbacks are pure DSP).
  *
  * Build (VS, Release|x64):
  *   Compile as C or C++; Link with: Shell32.lib; Ole32.lib
@@ -43,6 +46,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "Ws2_32.lib")
 
 typedef uint64_t uint64;
 typedef uint16_t anyID;
@@ -79,7 +85,7 @@ typedef uint16_t anyID;
 #define MAX_TRACKED 2048
 
 /* Requested reload cadences */
-#define VONDATA_RELOAD_MS 50
+#define MUTE_ENFORCE_MS 50 /* mute/DirectState enforcement tick; VONData itself now arrives via HTTP push */
 #define RADIODATA_RELOAD_MS 300
 #define SERVERDATA_RELOAD_MS 500
 
@@ -261,16 +267,6 @@ static void ensureParentDirExists(const char* filePath)
     if (dir[0])
         SHCreateDirectoryExA(NULL, dir, NULL);
 }
-static void buildVONDataPath(char* outBuf, size_t bufSize)
-{
-    char docs[PATH_BUFSIZE];
-    getDocumentsPath(docs, sizeof(docs));
-    if (!docs[0]) {
-        outBuf[0] = '\0';
-        return;
-    }
-    _snprintf(outBuf, (int)bufSize, "%s%sMy Games%sArmaReforger%sprofile%sVONData.bin", docs, PATH_SEP, PATH_SEP, PATH_SEP, PATH_SEP);
-}
 static void buildServerJsonPath(char* outBuf, size_t bufSize)
 {
     char docs[PATH_BUFSIZE];
@@ -412,9 +408,6 @@ static RadioSnapshot g_RadioSnap[2] = {0};
 static volatile long g_vonActiveIdx   = 0;
 static volatile long g_radioActiveIdx = 0;
 
-/* Paths (was g_Von.jsonPath earlier) */
-static char g_VonPath[PATH_BUFSIZE] = {0};
-
 /* ServerData cache */
 static char          g_ServerPath[PATH_BUFSIZE] = {0};
 static int           g_SD_have = 0, g_SD_inGame = 0;
@@ -434,7 +427,7 @@ static struct {
 
 /* Paths + watchers */
 static char             g_RadioPath[PATH_BUFSIZE] = {0};
-static WatchedFileState g_vonDataWatch = {0}, g_serverWatch = {0}, g_radioWatch = {0};
+static WatchedFileState g_serverWatch = {0}, g_radioWatch = {0};
 
 /* Mic + state gate (worker sets; audio reads) */
 static int           g_IsTransmitting = 0, g_LastMicActive = -1;
@@ -1173,108 +1166,250 @@ static void apply_direct_dsp(anyID clientID, const VonEntry* e, short* samples, 
 }
 
 /* ---------------------------------------------------------------------------
-   VONData.bin wire format
-   Written by CVON_SCR_VONController.EOnFixedFrame via FileHandle.Write() --
-   fixed-size binary records instead of JSON text, so neither side pays for
-   text formatting/parsing on the 16ms hot path. Layout must stay in lockstep
-   with CVON_VONDATA_* constants and WriteVONDataBinary() in
-   CVON_SCR_VONController.c.
+   VONData local HTTP push
+   CVON_SCR_VONController.UpdateVONData() POSTs a pipe/newline-delimited text
+   body to http://127.0.0.1:VON_HTTP_PORT/von via an async RestContext.POST
+   instead of writing VONData.bin. This moves the write off the game's sim
+   thread (FileIO calls there were synchronous and could stall the engine
+   tick); we pay for it with a tiny embedded HTTP/1.1 server here instead of
+   the previous GetFileAttributesEx poll.
+
+   Body format (text, "\n"-separated lines, "|"-separated fields):
+     line 1:      "<isTransmitting 0|1>|<entryCount>"
+     line 2..N+1: "<tsClientId>|<vonType>|<leftGainX1000>|<rightGainX1000>|
+                   <muffledDecibels>|<connQualityX1000>|<behindIntensityX1000>|
+                   <sameLanguage 0|1>|<frequency>|<factionKey>"
+   Gains/quality/intensity are transmitted as integers scaled by 1000 (matches
+   the old JSON's 3-decimal precision) because Enforce Script's float.ToString()
+   is locale-dependent and would otherwise corrupt the payload.
+   EXPERIMENTAL: unverified whether Enfusion's RestApi can reach this listener
+   from client scripts -- confirm in Workbench before relying on this.
 --------------------------------------------------------------------------- */
-#define VONDATA_MAGIC 0x314E4F56 /* "VON1" little-endian */
+#define VON_HTTP_PORT 47091
 
-#pragma pack(push, 1)
-typedef struct {
-    int32_t magic;
-    int32_t isTransmitting;
-    int32_t entryCount;
-} VonWireHeader;
-
-typedef struct {
-    int32_t tsClientId;
-    int32_t vonType;
-    float   leftGain;
-    float   rightGain;
-    int32_t muffledDecibels;
-    float   connectionQuality;
-    float   behindIntensity;
-    int32_t sameLanguage;
-    char    frequency[32];
-    char    factionKey[32];
-} VonWireEntry;
-#pragma pack(pop)
-
-/* ---------------------------------------------------------------------------
-   Loaders (using reusable buffers)
---------------------------------------------------------------------------- */
 static int cmp_von_entry_by_id(const void* a, const void* b)
 {
     return (int)((const VonEntry*)a)->id - (int)((const VonEntry*)b)->id;
 }
 
-static int load_von_into(VonSnapshot* dst)
+/* Splits *cursor at the next occurrence of delim, returning the segment before it
+   (possibly empty) and advancing *cursor past it. Unlike strtok, this preserves
+   empty fields (e.g. FactionKey == ""), which strtok would otherwise swallow. */
+static char* next_field(char** cursor, char delim)
 {
-    if (!g_VonPath[0])
+    if (!*cursor)
+        return NULL;
+    char* start = *cursor;
+    char* p     = start;
+    while (*p && *p != delim)
+        p++;
+    if (*p == delim) {
+        *p      = '\0';
+        *cursor = p + 1;
+    } else {
+        *cursor = NULL;
+    }
+    return start;
+}
+
+/* Parses one POST body (mutates it in place) into dst. Returns 0 on malformed input. */
+static int parse_von_body(char* body, VonSnapshot* dst)
+{
+    char* lineCursor = body;
+    char* headerLine = next_field(&lineCursor, '\n');
+    if (!headerLine)
         return 0;
 
-    long sz = 0;
-    if (!read_file_reuse(g_VonPath, &g_vonBuf, &g_vonCap, &sz))
+    char* fc = headerLine;
+    char* txStr = next_field(&fc, '|');
+    if (!txStr)
         return 0;
+    int isTransmitting = atoi(txStr);
 
-    if ((size_t)sz < sizeof(VonWireHeader))
-        return 0;
-
-    const VonWireHeader* hdr = (const VonWireHeader*)g_vonBuf;
-    if (hdr->magic != VONDATA_MAGIC || hdr->entryCount < 0)
-        return 0;
-
-    size_t count = (size_t)hdr->entryCount;
-    if (count > MAX_TRACKED)
-        count = MAX_TRACKED;
-
-    /* Guards against a torn read if the game process is mid-write when we poll. */
-    size_t needed = sizeof(VonWireHeader) + count * sizeof(VonWireEntry);
-    if ((size_t)sz < needed)
-        return 0;
-
-    g_IsTransmitting = hdr->isTransmitting ? 1 : 0;
-
-    const VonWireEntry* src = (const VonWireEntry*)(g_vonBuf + sizeof(VonWireHeader));
-    for (size_t i = 0; i < count; ++i)
+    size_t count = 0;
+    char* line;
+    while (lineCursor && count < MAX_TRACKED)
     {
+        line = next_field(&lineCursor, '\n');
+        if (!line || !line[0])
+            continue;
+
+        char* f = line;
+        char* clientIdS = next_field(&f, '|');
+        char* vonTypeS  = clientIdS ? next_field(&f, '|') : NULL;
+        char* leftS     = vonTypeS  ? next_field(&f, '|') : NULL;
+        char* rightS    = leftS     ? next_field(&f, '|') : NULL;
+        char* muffledS  = rightS    ? next_field(&f, '|') : NULL;
+        char* connQS    = muffledS  ? next_field(&f, '|') : NULL;
+        char* behindS   = connQS    ? next_field(&f, '|') : NULL;
+        char* sameLangS = behindS   ? next_field(&f, '|') : NULL;
+        char* freqS     = sameLangS ? next_field(&f, '|') : NULL;
+        char* factionS  = freqS     ? next_field(&f, '|') : NULL;
+        if (!factionS)
+            continue; /* malformed line; skip rather than misalign fields */
+
         VonEntry e;
         memset(&e, 0, sizeof(e));
-        e.id              = (anyID)src[i].tsClientId;
-        e.type            = (src[i].vonType == 1) ? VON_RADIO : VON_DIRECT;
-        e.leftGain        = src[i].leftGain;
-        e.rightGain       = src[i].rightGain;
-        e.muffledDb       = (float)src[i].muffledDecibels;
-        e.connQ           = clampf(src[i].connectionQuality, 0.0f, 1.0f);
-        e.behindIntensity = clampf(src[i].behindIntensity, 0.0f, 1.0f);
-        e.sameLanguage    = src[i].sameLanguage;
+        e.id              = (anyID)atoi(clientIdS);
+        e.type            = (atoi(vonTypeS) == 1) ? VON_RADIO : VON_DIRECT;
+        e.leftGain        = (float)atoi(leftS) / 1000.0f;
+        e.rightGain       = (float)atoi(rightS) / 1000.0f;
+        e.muffledDb       = (float)atoi(muffledS);
+        e.connQ           = clampf((float)atoi(connQS) / 1000.0f, 0.0f, 1.0f);
+        e.behindIntensity = clampf((float)atoi(behindS) / 1000.0f, 0.0f, 1.0f);
+        e.sameLanguage    = atoi(sameLangS);
         e.txTimeDev       = INT_MIN;
 
-        memcpy(e.txFreq, src[i].frequency, sizeof(src[i].frequency));
-        e.txFreq[sizeof(src[i].frequency)] = '\0';
-        trim_inplace(e.txFreq);
-
-        memcpy(e.txFaction, src[i].factionKey, sizeof(src[i].factionKey));
-        e.txFaction[sizeof(src[i].factionKey)] = '\0';
-        trim_inplace(e.txFaction);
-
+        strncpy(e.txFreq, freqS, sizeof(e.txFreq) - 1);
+        strncpy(e.txFaction, factionS, sizeof(e.txFaction) - 1);
         e.lastUpdateTick = GetTickCount();
 
-        dst->entries[i] = e;
+        dst->entries[count++] = e;
     }
 
-    dst->count     = count;
-    dst->loaded    = 1;
-    dst->buildTick = GetTickCount();
+    g_IsTransmitting = isTransmitting ? 1 : 0;
+    dst->count       = count;
+    dst->loaded      = 1;
+    dst->buildTick   = GetTickCount();
 
-    /* Sort by id so find_entry can use binary search instead of O(n) scan. */
     if (count > 1)
         qsort(dst->entries, count, sizeof(VonEntry), cmp_von_entry_by_id);
 
     return 1;
+}
+
+static void send_http_response(SOCKET client, int code)
+{
+    const char* status = (code == 200) ? "200 OK" : (code == 400) ? "400 Bad Request" : "500 Internal Server Error";
+    char resp[256];
+    int len = _snprintf(resp, sizeof(resp), "HTTP/1.1 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status);
+    if (len > 0)
+        send(client, resp, len, 0);
+}
+
+/* Reads one HTTP request off client, parses its body into g_VonSnap's inactive buffer,
+   and publishes it. Single-threaded owner of g_vonBuf/g_vonCap (this thread only). */
+static void handle_von_http_connection(SOCKET client)
+{
+    char headerBuf[8192];
+    int  total = 0;
+    for (;;) {
+        int n = recv(client, headerBuf + total, (int)sizeof(headerBuf) - total - 1, 0);
+        if (n <= 0)
+            return;
+        total += n;
+        headerBuf[total] = '\0';
+        if (strstr(headerBuf, "\r\n\r\n") || total >= (int)sizeof(headerBuf) - 1)
+            break;
+    }
+
+    char* headerEnd = strstr(headerBuf, "\r\n\r\n");
+    if (!headerEnd) {
+        send_http_response(client, 400);
+        return;
+    }
+    int headerLen = (int)(headerEnd - headerBuf) + 4;
+    int haveInBuf = total - headerLen;
+
+    const char* clHeader = strstr(headerBuf, "Content-Length:");
+    if (!clHeader)
+        clHeader = strstr(headerBuf, "content-length:");
+    int contentLength = clHeader ? atoi(clHeader + 15) : 0;
+    if (contentLength <= 0 || contentLength > 4 * 1024 * 1024) {
+        send_http_response(client, 400);
+        return;
+    }
+
+    if ((size_t)contentLength + 1 > g_vonCap) {
+        size_t newCap = (size_t)contentLength + 1024;
+        char*  nb     = (char*)realloc(g_vonBuf, newCap);
+        if (!nb) {
+            send_http_response(client, 500);
+            return;
+        }
+        g_vonBuf = nb;
+        g_vonCap = newCap;
+    }
+
+    int have = (haveInBuf < contentLength) ? haveInBuf : contentLength;
+    if (have > 0)
+        memcpy(g_vonBuf, headerEnd + 4, have);
+    while (have < contentLength) {
+        int n = recv(client, g_vonBuf + have, contentLength - have, 0);
+        if (n <= 0) {
+            send_http_response(client, 400);
+            return;
+        }
+        have += n;
+    }
+    g_vonBuf[contentLength] = '\0';
+
+    long readIdx  = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
+    long writeIdx = (readIdx ^ 1) & 1;
+    if (parse_von_body(g_vonBuf, &g_VonSnap[writeIdx]))
+        InterlockedExchange(&g_vonActiveIdx, writeIdx);
+
+    send_http_response(client, 200);
+}
+
+static HANDLE g_vonHttpThread   = NULL;
+static SOCKET g_vonListenSocket = INVALID_SOCKET;
+
+static DWORD WINAPI von_http_main(LPVOID param)
+{
+    (void)param;
+    for (;;) {
+        SOCKET client = accept(g_vonListenSocket, NULL, NULL);
+        if (client == INVALID_SOCKET)
+            break; /* listen socket was closed by ts3plugin_shutdown */
+        handle_von_http_connection(client);
+        closesocket(client);
+    }
+    return 0;
+}
+
+/* Binds to loopback only (never 0.0.0.0) so this never needs a Windows Firewall prompt
+   and is unreachable from anywhere off this machine. Returns 0 on failure (best-effort;
+   VON audio just won't update if the listener couldn't start). */
+static int start_von_http_server(void)
+{
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        return 0;
+
+    g_vonListenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (g_vonListenSocket == INVALID_SOCKET)
+        return 0;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(VON_HTTP_PORT);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    if (bind(g_vonListenSocket, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR ||
+        listen(g_vonListenSocket, 8) == SOCKET_ERROR) {
+        closesocket(g_vonListenSocket);
+        g_vonListenSocket = INVALID_SOCKET;
+        return 0;
+    }
+
+    g_vonHttpThread = CreateThread(NULL, 0, von_http_main, NULL, 0, NULL);
+    return g_vonHttpThread != NULL;
+}
+
+static void stop_von_http_server(void)
+{
+    if (g_vonListenSocket != INVALID_SOCKET) {
+        closesocket(g_vonListenSocket); /* unblocks accept() in von_http_main */
+        g_vonListenSocket = INVALID_SOCKET;
+    }
+    if (g_vonHttpThread) {
+        WaitForSingleObject(g_vonHttpThread, 3000);
+        CloseHandle(g_vonHttpThread);
+        g_vonHttpThread = NULL;
+    }
+    WSACleanup();
 }
 
 static int load_radio_into(RadioSnapshot* dst)
@@ -1699,7 +1834,7 @@ static void try_return_to_previous(uint64 sch)
 static HANDLE        g_workerThread = NULL;
 static volatile long g_workerQuit   = 0;
 
-static unsigned long g_nextVonReloadTick    = 0;
+static unsigned long g_nextMuteEnforceTick  = 0;
 static unsigned long g_nextRadioReloadTick  = 0;
 static unsigned long g_nextServerReloadTick = 0;
 
@@ -1773,7 +1908,7 @@ static const VonEntry* find_entry(anyID clientID)
     if (!snap || !snap->loaded || snap->count == 0)
         return NULL;
 
-    /* Binary search — entries are sorted by id in load_von_into(). */
+    /* Binary search — entries are sorted by id in parse_von_body(). */
     size_t lo = 0, hi = snap->count;
     while (lo < hi) {
         const size_t  mid = lo + (hi - lo) / 2;
@@ -2042,20 +2177,13 @@ static unsigned long WINAPI worker_main(LPVOID param)
         /* ---------------- Mic toggle ---------------- */
         apply_mic_state(sch);
 
-        /* ---------------- VONData + mute enforcement ---------------- */
-        if (now >= g_nextVonReloadTick) {
-            g_nextVonReloadTick = now + VONDATA_RELOAD_MS;
-
-            if (g_VonPath[0]) {
-                FILETIME wt;
-                if (file_modified_since_last(g_VonPath, &g_vonDataWatch, &wt)) {
-                    long readIdx  = InterlockedCompareExchange(&g_vonActiveIdx, 0, 0);
-                    long writeIdx = (readIdx ^ 1) & 1; /* inactive buffer */
-                    if (load_von_into(&g_VonSnap[writeIdx])) {
-                        InterlockedExchange(&g_vonActiveIdx, writeIdx); /* publish */
-                    }
-                }
-            }
+        /* ---------------- Mute enforcement ---------------- */
+        /* VONData itself is no longer polled here -- it arrives via an async HTTP POST
+           handled on its own thread (von_http_main) and published straight into
+           g_VonSnap/g_vonActiveIdx. This tick just keeps DirectState/mute enforcement
+           running on a steady cadence. */
+        if (now >= g_nextMuteEnforceTick) {
+            g_nextMuteEnforceTick = now + MUTE_ENFORCE_MS;
 
             /* NEW: Update all DirectStates continuously */
             update_direct_states_in_worker();
@@ -2144,12 +2272,9 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
 {
     InitializeCriticalSection(&g_directLock);
 
-    buildVONDataPath(g_VonPath, sizeof(g_VonPath));
     buildServerJsonPath(g_ServerPath, sizeof(g_ServerPath));
     buildRadioJsonPath(g_RadioPath, sizeof(g_RadioPath));
 
-    if (g_VonPath[0])
-        ensureParentDirExists(g_VonPath);
     if (g_ServerPath[0])
         ensureParentDirExists(g_ServerPath);
     if (g_RadioPath[0])
@@ -2157,7 +2282,6 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
 
     g_LastCount                = 0;
     memset(g_Last, 0, sizeof(g_Last));  /* Clear client state tracking */
-    g_vonDataWatch.loadedOnce  = 0;
     g_serverWatch.loadedOnce   = 0;
     g_radioWatch.loadedOnce    = 0;
     g_SD_have                  = 0;
@@ -2170,16 +2294,13 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
 
        g_directCount = 0;
 
-    /* Build initial snapshots so audio has something valid to read */
+    /* Build initial snapshot so audio has something valid to read; VON has no file to
+       bootstrap from anymore -- it stays empty until the first HTTP POST arrives. */
     {
-        /* VON */
-        long w = 0;
-        memset(&g_VonSnap[w], 0, sizeof(g_VonSnap[w]));
-        load_von_into(&g_VonSnap[w]); /* best effort */
-        InterlockedExchange(&g_vonActiveIdx, w);
+        memset(&g_VonSnap[0], 0, sizeof(g_VonSnap[0]));
+        InterlockedExchange(&g_vonActiveIdx, 0);
 
-        /* Radio */
-        w = 0;
+        long w = 0;
         memset(&g_RadioSnap[w], 0, sizeof(g_RadioSnap[w]));
         load_radio_into(&g_RadioSnap[w]); /* best effort */
         InterlockedExchange(&g_radioActiveIdx, w);
@@ -2190,6 +2311,10 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
     }
     read_serverdata_from_disk();
     write_serverdata_if_changed(0);
+
+    if (!start_von_http_server()) {
+        logf("[CRF] VONData HTTP listener failed to start on 127.0.0.1:%d\n", VON_HTTP_PORT);
+    }
 
     InterlockedExchange(&g_workerQuit, 0);
     g_workerThread = CreateThread(NULL, 0, worker_main, NULL, 0, NULL);
@@ -2222,6 +2347,7 @@ PLUGINS_EXPORTDLL void ts3plugin_shutdown()
         CloseHandle(g_workerThread);
         g_workerThread = NULL;
     }
+    stop_von_http_server(); /* joins the HTTP thread before g_vonBuf is freed below */
     if (g_vonBuf) {
         free(g_vonBuf);
         g_vonBuf = NULL;
@@ -2248,7 +2374,7 @@ PLUGINS_EXPORTDLL void ts3plugin_onConnectStatusChangeEvent(uint64 sch, int newS
     (void)errorNumber;
     if (newStatus == STATUS_CONNECTION_ESTABLISHED) {
         apply_proximity_muting(sch);
-        g_nextVonReloadTick    = 0;
+        g_nextMuteEnforceTick  = 0;
         g_nextRadioReloadTick  = 0;
         g_nextServerReloadTick = 0;
         g_nextMoveTryTick      = 0;
