@@ -639,7 +639,7 @@ modded class SCR_VONController
 		
 		if (!m_bFirstConnect)
 		{
-			WriteJSON(true, true);
+			UpdateVONData(true, true);
 			m_bFirstConnect = true;
 		}
 		
@@ -777,12 +777,12 @@ modded class SCR_VONController
 			m_bHasBroadcasted = true;
 		}
 		
-		// WriteJSON runs every tick; the dirty flag inside skips SaveToFile when nothing changed.
+		// UpdateVONData runs every tick; the dirty flag inside skips the binary flush when nothing changed.
 		m_fServerDataBuffer += timeSlice;
 		bool checkServerData = (m_fServerDataBuffer >= 1.0);
 		if (checkServerData)
 			m_fServerDataBuffer = 0;
-		WriteJSON(checkServerData);
+		UpdateVONData(checkServerData);
 	}
 	
 	//Thank god for CHATGPT
@@ -1184,15 +1184,15 @@ modded class SCR_VONController
 	//FactionKey, this always gets set but it just determines if encryption is enabled that we can hear the radio broadcast coming in.
 	
 	//Chain from broadcast is
-	//You broadcast to selected players -> They receive it in their player controller and add it locally -> 
-	//This WriteJson() method is being constantly called it will then write the data to the json for teamspeak to interpret ->
-	//Teamspeak reads the JSON, parses the data and compares it using the clientId to see if they should hear this baffoon ->
-	//The entry is removed from the local array and is no longer written to the JSON, there for teamspeak just mutes that client as he has no data in the JSON.
+	//You broadcast to selected players -> They receive it in their player controller and add it locally ->
+	//This UpdateVONData() method is being constantly called it will then write the data to VONData.bin for teamspeak to interpret ->
+	//Teamspeak reads VONData.bin, parses the data and compares it using the clientId to see if they should hear this baffoon ->
+	//The entry is removed from the local array and is no longer written to VONData.bin, there for teamspeak just mutes that client as he has no data in the file.
 	//==========================================================================================================================================================================
 	// checkServerData: when false, skip the VONServerData.json read entirely.
 	// Called every 50ms but checkServerData is only true once per second to avoid
 	// opening and parsing a file 20 times per second for data that rarely changes.
-	void WriteJSON(bool checkServerData = true, bool firstConnect = false)
+	void UpdateVONData(bool checkServerData = true, bool firstConnect = false)
 	{
 		if (!GetGame().GetPlayerController())
 			return;
