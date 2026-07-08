@@ -546,6 +546,17 @@ modded class SCR_VONController
 
 	// VONData.bin wire format: fixed-size binary records instead of JSON text.
 	// Avoids per-frame string formatting on write and JSON parsing on the TS plugin's read side.
+	//
+	// Layout (matches plugin.c's parser):
+	//   [int]   magic, txFlag, count
+	//   [int]   per entry: clientId, vonType, muffledDb, sameLanguage   (4 * count ints)
+	//   [float] per entry: leftGain, rightGain, connQ, behindIntensity (4 * count floats)
+	//   [bytes] per entry: frequency[32], factionKey[32]
+	// The int and float fields are written as two batched WriteArray() calls instead of one
+	// Write() call per field. WriteArray only accepts a homogeneous array<int> or array<float>,
+	// so the two are batched separately rather than interleaved per-entry as before. Floats stay
+	// real floats (not fixed-point) since this is a raw binary write, not a text/ToString() path,
+	// so there's no locale-corruption risk to design around.
 	static const int CVON_VONDATA_MAGIC = 0x314E4F56; // "VON1", written little-endian
 	static const int CVON_VONDATA_FREQ_LEN = 32;
 	static const int CVON_VONDATA_FACTION_LEN = 32;
@@ -560,6 +571,16 @@ modded class SCR_VONController
 	ref array<string> m_aBinFrequency = {};
 	ref array<string> m_aBinFactionKey = {};
 
+	// Reused scratch buffers for the batched WriteArray() calls below -- cleared and refilled
+	// each write instead of allocated fresh, same rationale as the m_aBin* accumulators.
+	ref array<int>   m_aVonIntBuffer = {};
+	ref array<float> m_aVonFloatBuffer = {};
+
+	// Kept open for the controller's lifetime instead of OpenFile/Close per write: repeatedly
+	// opening and closing a FileHandle is far more expensive than the writes themselves.
+	// Reset with Seek(0) before each write; closed in the destructor.
+	ref FileHandle m_VONDataFileHandle;
+
 	//Pads/truncates a string to exactly len characters so the fixed-size binary record
 	//stays byte-aligned with the native plugin's wire struct.
 	private string PadFixed(string s, int len)
@@ -572,36 +593,55 @@ modded class SCR_VONController
 		return result;
 	}
 
+	private void EnsureVONDataFileOpen()
+	{
+		if (m_VONDataFileHandle)
+			return;
+		m_VONDataFileHandle = FileIO.OpenFile("$profile:/VONData.bin", FileMode.WRITE);
+	}
+
 	//Writes the accumulated m_aBin* entries to VONData.bin as fixed-size binary records.
+	//Batches all scalar fields into two WriteArray() calls instead of 8 * count individual
+	//Write() calls, and reuses a single open FileHandle instead of opening/closing every write.
 	private void WriteVONDataBinary(bool isTransmitting, int count)
 	{
-		FileHandle file = FileIO.OpenFile("$profile:/VONData.bin", FileMode.WRITE);
-		if (!file)
+		EnsureVONDataFileOpen();
+		if (!m_VONDataFileHandle)
 			return;
 
 		int txFlag = 0;
 		if (isTransmitting)
 			txFlag = 1;
 
-		file.Write(CVON_VONDATA_MAGIC, 4);
-		file.Write(txFlag, 4);
-		file.Write(count, 4);
+		m_aVonIntBuffer.Clear();
+		m_aVonIntBuffer.Insert(CVON_VONDATA_MAGIC);
+		m_aVonIntBuffer.Insert(txFlag);
+		m_aVonIntBuffer.Insert(count);
+
+		m_aVonFloatBuffer.Clear();
 
 		for (int i = 0; i < count; i++)
 		{
-			file.Write(m_aBinClientId[i], 4);
-			file.Write(m_aBinVonType[i], 4);
-			file.Write(m_aBinLeftGain[i], 4);
-			file.Write(m_aBinRightGain[i], 4);
-			file.Write(m_aBinMuffledDb[i], 4);
-			file.Write(m_aBinConnQ[i], 4);
-			file.Write(m_aBinBehindIntensity[i], 4);
-			file.Write(m_aBinSameLanguage[i], 4);
-			file.Write(PadFixed(m_aBinFrequency[i], CVON_VONDATA_FREQ_LEN), CVON_VONDATA_FREQ_LEN);
-			file.Write(PadFixed(m_aBinFactionKey[i], CVON_VONDATA_FACTION_LEN), CVON_VONDATA_FACTION_LEN);
+			m_aVonIntBuffer.Insert(m_aBinClientId[i]);
+			m_aVonIntBuffer.Insert(m_aBinVonType[i]);
+			m_aVonIntBuffer.Insert(m_aBinMuffledDb[i]);
+			m_aVonIntBuffer.Insert(m_aBinSameLanguage[i]);
+
+			m_aVonFloatBuffer.Insert(m_aBinLeftGain[i]);
+			m_aVonFloatBuffer.Insert(m_aBinRightGain[i]);
+			m_aVonFloatBuffer.Insert(m_aBinConnQ[i]);
+			m_aVonFloatBuffer.Insert(m_aBinBehindIntensity[i]);
 		}
 
-		file.Close();
+		m_VONDataFileHandle.Seek(0);
+		m_VONDataFileHandle.WriteArray(m_aVonIntBuffer);
+		m_VONDataFileHandle.WriteArray(m_aVonFloatBuffer);
+
+		for (int i = 0; i < count; i++)
+		{
+			m_VONDataFileHandle.Write(PadFixed(m_aBinFrequency[i], CVON_VONDATA_FREQ_LEN), CVON_VONDATA_FREQ_LEN);
+			m_VONDataFileHandle.Write(PadFixed(m_aBinFactionKey[i], CVON_VONDATA_FACTION_LEN), CVON_VONDATA_FACTION_LEN);
+		}
 	}
 
 	override void EOnFixedFrame(IEntity owner, float timeSlice)
@@ -1406,6 +1446,12 @@ modded class SCR_VONController
 	//==========================================================================================================================================================================
 	void ~SCR_VONController()
 	{
+		if (m_VONDataFileHandle)
+		{
+			m_VONDataFileHandle.Close();
+			m_VONDataFileHandle = null;
+		}
+
 		if (m_aPlayerIdsBroadcastedTo.Count() > 0)
 		{
 			foreach (int playerId: m_aPlayerIdsBroadcastedTo)

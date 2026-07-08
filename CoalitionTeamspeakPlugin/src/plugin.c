@@ -1174,11 +1174,17 @@ static void apply_direct_dsp(anyID clientID, const VonEntry* e, short* samples, 
 
 /* ---------------------------------------------------------------------------
    VONData.bin wire format
-   Written by CVON_SCR_VONController.EOnFixedFrame via FileHandle.Write() --
-   fixed-size binary records instead of JSON text, so neither side pays for
-   text formatting/parsing on the 16ms hot path. Layout must stay in lockstep
-   with CVON_VONDATA_* constants and WriteVONDataBinary() in
-   CVON_SCR_VONController.c.
+   Written by CVON_SCR_VONController.WriteVONDataBinary via two batched
+   FileHandle.WriteArray() calls (int fields, then float fields) followed by
+   per-entry Write() calls for the two fixed strings -- WriteArray only takes
+   a homogeneous array<int> or array<float>, so the record can't stay a single
+   interleaved struct-per-entry the way a plain Write()-per-field loop could.
+   Layout must stay in lockstep with CVON_VONDATA_* constants and
+   WriteVONDataBinary() in CVON_SCR_VONController.c:
+     [VonWireHeader]                 1x
+     [VonWireIntBlock]    * count    (clientId, vonType, muffledDb, sameLanguage)
+     [VonWireFloatBlock]  * count    (leftGain, rightGain, connQ, behindIntensity)
+     [VonWireStringBlock] * count    (frequency[32], factionKey[32])
 --------------------------------------------------------------------------- */
 #define VONDATA_MAGIC 0x314E4F56 /* "VON1" little-endian */
 
@@ -1190,17 +1196,23 @@ typedef struct {
 } VonWireHeader;
 
 typedef struct {
-    int32_t tsClientId;
+    int32_t clientId;
     int32_t vonType;
-    float   leftGain;
-    float   rightGain;
     int32_t muffledDecibels;
-    float   connectionQuality;
-    float   behindIntensity;
     int32_t sameLanguage;
-    char    frequency[32];
-    char    factionKey[32];
-} VonWireEntry;
+} VonWireIntBlock;
+
+typedef struct {
+    float leftGain;
+    float rightGain;
+    float connectionQuality;
+    float behindIntensity;
+} VonWireFloatBlock;
+
+typedef struct {
+    char frequency[32];
+    char factionKey[32];
+} VonWireStringBlock;
 #pragma pack(pop)
 
 /* ---------------------------------------------------------------------------
@@ -1232,33 +1244,39 @@ static int load_von_into(VonSnapshot* dst)
         count = MAX_TRACKED;
 
     /* Guards against a torn read if the game process is mid-write when we poll. */
-    size_t needed = sizeof(VonWireHeader) + count * sizeof(VonWireEntry);
+    size_t needed = sizeof(VonWireHeader)
+                   + count * sizeof(VonWireIntBlock)
+                   + count * sizeof(VonWireFloatBlock)
+                   + count * sizeof(VonWireStringBlock);
     if ((size_t)sz < needed)
         return 0;
 
     g_IsTransmitting = hdr->isTransmitting ? 1 : 0;
 
-    const VonWireEntry* src = (const VonWireEntry*)(g_vonBuf + sizeof(VonWireHeader));
+    const VonWireIntBlock*    ints    = (const VonWireIntBlock*)(g_vonBuf + sizeof(VonWireHeader));
+    const VonWireFloatBlock*  floats  = (const VonWireFloatBlock*)((const char*)ints + count * sizeof(VonWireIntBlock));
+    const VonWireStringBlock* strings = (const VonWireStringBlock*)((const char*)floats + count * sizeof(VonWireFloatBlock));
+
     for (size_t i = 0; i < count; ++i)
     {
         VonEntry e;
         memset(&e, 0, sizeof(e));
-        e.id              = (anyID)src[i].tsClientId;
-        e.type            = (src[i].vonType == 1) ? VON_RADIO : VON_DIRECT;
-        e.leftGain        = src[i].leftGain;
-        e.rightGain       = src[i].rightGain;
-        e.muffledDb       = (float)src[i].muffledDecibels;
-        e.connQ           = clampf(src[i].connectionQuality, 0.0f, 1.0f);
-        e.behindIntensity = clampf(src[i].behindIntensity, 0.0f, 1.0f);
-        e.sameLanguage    = src[i].sameLanguage;
+        e.id              = (anyID)ints[i].clientId;
+        e.type            = (ints[i].vonType == 1) ? VON_RADIO : VON_DIRECT;
+        e.leftGain        = floats[i].leftGain;
+        e.rightGain       = floats[i].rightGain;
+        e.muffledDb       = (float)ints[i].muffledDecibels;
+        e.connQ           = clampf(floats[i].connectionQuality, 0.0f, 1.0f);
+        e.behindIntensity = clampf(floats[i].behindIntensity, 0.0f, 1.0f);
+        e.sameLanguage    = ints[i].sameLanguage;
         e.txTimeDev       = INT_MIN;
 
-        memcpy(e.txFreq, src[i].frequency, sizeof(src[i].frequency));
-        e.txFreq[sizeof(src[i].frequency)] = '\0';
+        memcpy(e.txFreq, strings[i].frequency, sizeof(strings[i].frequency));
+        e.txFreq[sizeof(strings[i].frequency)] = '\0';
         trim_inplace(e.txFreq);
 
-        memcpy(e.txFaction, src[i].factionKey, sizeof(src[i].factionKey));
-        e.txFaction[sizeof(src[i].factionKey)] = '\0';
+        memcpy(e.txFaction, strings[i].factionKey, sizeof(strings[i].factionKey));
+        e.txFaction[sizeof(strings[i].factionKey)] = '\0';
         trim_inplace(e.txFaction);
 
         e.lastUpdateTick = GetTickCount();
