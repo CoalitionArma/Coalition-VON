@@ -320,15 +320,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		if (!entity)
 			return null;
 		
-		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerController());
-		if (!pc)
-			return null;
-		
 		ref array<RplId> radios = {};
-		if (pc.GetHeadsetLoweredState())
-			return radios;
-		
-		
 		SCR_InventoryStorageManagerComponent inventoryComp = SCR_InventoryStorageManagerComponent.Cast(entity.FindComponent(SCR_InventoryStorageManagerComponent));
 		ref array<IEntity> items = {};
 		inventoryComp.GetItems(items);

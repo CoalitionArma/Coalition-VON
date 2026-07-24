@@ -40,7 +40,10 @@ modded class SCR_PlayerController
 		//Grab the first radio to use its radio component
 		//Really regretting how I made this
 		IEntity radio;
-		SCR_InventoryStorageManagerComponent inventoryComp = SCR_InventoryStorageManagerComponent.Cast(GetControlledEntity().FindComponent(SCR_InventoryStorageManagerComponent));
+		IEntity player = GetControlledEntity();
+		if (!player)
+			return;
+		SCR_InventoryStorageManagerComponent inventoryComp = SCR_InventoryStorageManagerComponent.Cast(player.FindComponent(SCR_InventoryStorageManagerComponent));
 		ref array<IEntity> items = {};
 		inventoryComp.GetItems(items);
 		foreach (IEntity item: items)
@@ -52,11 +55,14 @@ modded class SCR_PlayerController
 			break;
 		}
 		
+		if (!radio)
+			return;
+		
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 		if (!radioComp)
 			return;
 
-		radioComp.WriteJSON(GetControlledEntity());
+		radioComp.WriteJSON(player);
 	}
 	
 	bool GetHeadsetLoweredState()
