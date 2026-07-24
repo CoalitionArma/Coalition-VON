@@ -24,9 +24,50 @@ modded class SCR_PlayerController
 	//Used so we can keep Stereo and Volume values
 	ref array<ref CVON_RadioSettingObject> m_aRadioSettings = {};
 	
+	//Local variable stored to remove radios from the radio data json to simulate taking your headset off
+	//The asshole who made this will do better in A4
+	bool m_bIsHeadsetLowered = false;
+	
 	override void EOnInit(IEntity owner)
 	{
 		super.EOnInit(owner);
+	}
+	
+	void ToggleHeadsetLoweredState()
+	{
+		m_bIsHeadsetLowered = !m_bIsHeadsetLowered;
+		
+		//Grab the first radio to use its radio component
+		//Really regretting how I made this
+		IEntity radio;
+		IEntity player = GetControlledEntity();
+		if (!player)
+			return;
+		SCR_InventoryStorageManagerComponent inventoryComp = SCR_InventoryStorageManagerComponent.Cast(player.FindComponent(SCR_InventoryStorageManagerComponent));
+		ref array<IEntity> items = {};
+		inventoryComp.GetItems(items);
+		foreach (IEntity item: items)
+		{
+			if (!item.FindComponent(CVON_RadioComponent))
+				continue;
+			
+			radio = item;
+			break;
+		}
+		
+		if (!radio)
+			return;
+		
+		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+		if (!radioComp)
+			return;
+
+		radioComp.WriteJSON(player);
+	}
+	
+	bool GetHeadsetLoweredState()
+	{
+		return m_bIsHeadsetLowered;
 	}
 	
 	void SetTeamspeakClientId(int input)

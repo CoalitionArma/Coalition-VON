@@ -453,10 +453,19 @@ class CVON_RadioComponent: ScriptComponent
 		if (!gamemode)
 			return;
 		
-		ref array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(entity);
+		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerController());
+		if (!pc)
+			return;
+		
+		ref array<RplId> radios = {};
+		if (pc.GetHeadsetLoweredState())
+			radios = {};
+		else 
+			radios = CVON_VONGameModeComponent.GetInstance().GetRadios(entity);
 		
 		if (!radios)
 			return;
+		
 		string radioFreqs = "";
 		string factionKeys = "";
 		foreach (RplId radio: radios)
