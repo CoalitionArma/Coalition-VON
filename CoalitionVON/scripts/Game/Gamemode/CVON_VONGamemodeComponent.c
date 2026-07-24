@@ -325,7 +325,6 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			return null;
 		
 		ref array<RplId> radios = {};
-		Print(pc.GetHeadsetLoweredState());
 		if (pc.GetHeadsetLoweredState())
 			return radios;
 		

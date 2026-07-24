@@ -453,9 +453,7 @@ class CVON_RadioComponent: ScriptComponent
 		if (!gamemode)
 			return;
 		
-		Print("Writing JSON");
 		ref array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(entity);
-		Print(radios);
 		if (!radios)
 			return;
 		string radioFreqs = "";
