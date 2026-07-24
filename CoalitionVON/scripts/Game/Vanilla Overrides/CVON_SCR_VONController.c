@@ -364,6 +364,9 @@ modded class SCR_VONController
 		container.m_SenderRplId = RplComponent.Cast(m_Player.FindComponent(RplComponent)).Id();
 		container.m_iClientId = m_PlayerController.GetTeamspeakClientId();
 		container.m_iPlayerId = m_PlayerController.GetLocalPlayerId();
+		
+		//Reinitialize our radios before trying to talk.
+		m_PlayerController.InitializeRadios(m_PlayerController.GetControlledEntity());
 		if (container.m_eVonType == CVON_EVONType.RADIO)
 		{
 			switch (transmitType)
@@ -373,12 +376,15 @@ modded class SCR_VONController
 					if (m_PlayerController.m_aRadios.Count() < 1)
 						return;
 					IEntity radio = m_PlayerController.m_aRadios.Get(0);
-					if (radio == null)
+					if (!radio)
 					{
 						//Reinitialize radios cause something is seriously fucked.
 						m_PlayerController.InitializeRadios(m_PlayerController.GetControlledEntity());
 						return;
 					}
+					
+					if (!radio)
+						return;
 					
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
