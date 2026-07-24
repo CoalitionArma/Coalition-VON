@@ -3,6 +3,7 @@ modded class SCR_VONMenu
 {
 	//Ignore this for now, used for handmic shit that does not work.
 	bool m_bOpeningHandMic = false;
+	SCR_ButtonTextComponent m_HeadsetButton;
 	void OpenMenu(array<string> freqs, int amountOfRadios, array<string> radioNames)
 	{
 		

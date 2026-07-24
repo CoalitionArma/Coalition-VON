@@ -1,10 +1,18 @@
 SCR_ChimeraCharacter {
  ID "520EC961A090B1EE"
  components {
-  CVON_CharacterRadioManagerComponent "{663D7BE26CED593A}" {
-  }
   ActionsManagerComponent "{520EA1D2F659CE02}" {
    ActionContexts {
+    UserActionContext "{69F0FD142FE3CC03}" {
+     ContextName "LeftShoulder"
+     Position PointInfo "{69F0FD1426F44D74}" {
+      PivotID "LeftShoulder"
+      Offset -0.0958 0.0405 0.0424
+     }
+     Radius 0.65
+     FilterActionsUsingCache 0
+     SkipCullingPlaneDetection 1
+    }
     UserActionContext "{663D0A549C01DF55}" {
      ContextName "Back"
      Position PointInfo "{663D0A549B976D3C}" {
@@ -21,6 +29,13 @@ SCR_ChimeraCharacter {
       Name "Grab Hand Mic"
      }
      Duration 0.5
+    }
+    CVON_LowerHeadsetAction "{69F0FD15CA5A1AE7}" {
+     ParentContextList {
+     }
+     UIInfo UIInfo "{69F0FD15DF68069A}" {
+      Name "Lower Headset"
+     }
     }
    }
   }

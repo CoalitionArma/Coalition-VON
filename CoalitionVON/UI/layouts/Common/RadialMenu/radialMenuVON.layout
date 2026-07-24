@@ -16,5 +16,52 @@ FrameWidgetClass : "{8DE7D0C6EB809121}UI/layouts/Common/RadialMenu/radialMenu.la
    Opacity 0
    Size 1500 1371
   }
+  PanelWidgetClass "{69F107E921E1B555}" {
+   Name "Panel0"
+   Slot FrameWidgetSlot "{69F107E921E1B57F}" {
+    Anchor 0.5 0.5 0.5 0.5
+    PositionX -75
+    OffsetLeft -75
+    PositionY -15
+    OffsetTop -15
+    SizeX 150
+    OffsetRight -75
+    OffsetBottom -15
+   }
+   Color 0 0 0 1
+   style outline_2px
+   {
+    ButtonWidgetClass "{69F107E932F605B4}" {
+     Name "Button0"
+     Slot FrameWidgetSlot "{69F107E932F60552}" {
+      Anchor 0 0 1 1
+      PositionX 0
+      OffsetLeft 2
+      PositionY 0
+      OffsetTop 2
+      SizeX -31.08
+      OffsetRight 2
+      SizeY -7.172
+      OffsetBottom 2
+     }
+     Color 0.056 0.056 0.056 1
+     components {
+      CVON_LowerHeadsetButton "{69F107EB5F7C9046}" {
+       m_sText "Lower Headset"
+      }
+     }
+     {
+      TextWidgetClass "{69F107E9EB6A425B}" {
+       Name "Text"
+       Slot ButtonWidgetSlot "{69F107E9EB6A4273}" {
+        Padding 2 0 2 0
+       }
+       Text "Lower Headset"
+       "Min Font Size" 10
+      }
+     }
+    }
+   }
+  }
  }
 }
