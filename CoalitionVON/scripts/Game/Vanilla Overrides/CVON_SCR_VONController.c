@@ -26,8 +26,6 @@ modded class SCR_VONController
 	
 	MenuManager m_MenuManager;
 	
-	CameraBase m_Camera;
-	
 	//MMM... stores the gamemode
 	CVON_VONGameModeComponent m_VONGameModeComponent;
 	PlayerManager m_PlayerManager;
@@ -580,10 +578,6 @@ modded class SCR_VONController
 		if (!m_PlayerRplComponent || !m_CharacterController || !m_Player)
 			return;
 		
-		m_Camera = m_CameraManager.CurrentCamera();
-		if (!m_Camera)
-			return;
-		
 		if (!m_bFirstConnect)
 		{
 			WriteJSON(true, true);
@@ -619,7 +613,7 @@ modded class SCR_VONController
 			maxDistance *= maxDistance;
 			container.m_iVolume = volume;
 			
-			float distance = vector.DistanceSq(container.m_SoundSource.GetOrigin(), m_Camera.GetOrigin());
+			float distance = vector.DistanceSq(container.m_SoundSource.GetOrigin(), m_Player.GetOrigin());
 			if (distance < maxDistance)
 				container.m_fDistanceToSender = distance;
 			else
@@ -667,7 +661,7 @@ modded class SCR_VONController
 				
 				int maxDistance = m_VONGameModeComponent.GetPlayerVolume(playerId);
 				maxDistance *= maxDistance;
-				float distance = vector.DistanceSq(player.GetOrigin(), m_Camera.GetOrigin());
+				float distance = vector.DistanceSq(player.GetOrigin(), m_Player.GetOrigin());
 				if (distance > maxDistance)
 				{
 					if (m_PlayerController.m_aLocalEntries.Contains(playerId))
@@ -780,7 +774,7 @@ modded class SCR_VONController
 	    // ---- Listener pose ----
 	    vector Lpos  = listener.GetOrigin();
 	    vector Right = listener.GetTransformAxis(0); // +X
-	    vector Up    = listener.GetTransformAxis(1); // +Y
+	    vector Up    = GetHeadHeight(listener);
 	    vector Fwd   = listener.GetTransformAxis(2); // +Z
 	
 	    // ---- Direction ----
@@ -1218,7 +1212,7 @@ modded class SCR_VONController
 		#endif
 		SCR_JsonSaveContext VONSave = new SCR_JsonSaveContext();
 		VONSave.WriteValue("IsTransmitting", m_bIsBroadcasting);
-		IEntity localEntity = m_Camera;
+		IEntity localEntity = m_Player;
 		if (!localEntity)
 			return;
 		// Dirty flag: if nothing changed since the last write, skip SaveToFile entirely.
