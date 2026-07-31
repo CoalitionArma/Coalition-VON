@@ -68,6 +68,9 @@ SCR_DestructibleBuildingEntity : "{509F83E199DA4EB0}Prefabs/Structures/Houses/Vi
 SCR_SpawnPoint : "{5A2220DD0C16958B}Prefabs/MP/Spawning/SpawnPoint_US.et" {
  coords 137.887 1 171.251
 }
+GameEntity : "{8951045BFE8BC8E4}Prefabs/Characters/HeadGear/FPV_Goggles.et" {
+ coords 130.125 1 165.027
+}
 $grp GenericEntity : "{C204374F722D5229}Prefabs/Items/Equipment/Radios/Radio_ANPRC117.et" {
  {
   coords 132.126 1 179.837
@@ -76,6 +79,12 @@ $grp GenericEntity : "{C204374F722D5229}Prefabs/Items/Equipment/Radios/Radio_ANP
   coords 131.996 1 180.404
  }
 }
+GenericEntity : "{E2434ED1318D8476}Prefabs/Characters/Items/DroneController.et" {
+ coords 130.001 1 165.867
+}
 Vehicle M151A1 : "{F649585ABB3706C4}Prefabs/Vehicles/Wheeled/M151A2/M151A2.et" {
  coords 134.145 1 180.486
+}
+GenericEntity : "{FDA92D590B9C633B}Prefabs/Drones/DJIBase/DJIBase.et" {
+ coords 131.832 1 165.235
 }
