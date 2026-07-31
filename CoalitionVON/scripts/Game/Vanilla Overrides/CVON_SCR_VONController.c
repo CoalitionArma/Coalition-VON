@@ -116,8 +116,10 @@ modded class SCR_VONController
 	        m_PlayerController.m_aRadios[i] = m_PlayerController.m_aRadios[i - 1];
 	    }
 	    m_PlayerController.m_aRadios[0] = last;
-	
-	    m_PlayerController.RotateActiveChannelServer();
+		m_PlayerController.m_iAmountOfTimesRadioRotated++;
+		if (m_PlayerController.m_iAmountOfTimesRadioRotated > count)
+			m_PlayerController.m_iAmountOfTimesRadioRotated = 1;
+			
 	}
 	
 	//! Initialize component, done once per controller

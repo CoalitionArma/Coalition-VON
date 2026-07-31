@@ -28,6 +28,8 @@ modded class SCR_PlayerController
 	//The asshole who made this will do better in A4
 	bool m_bIsHeadsetLowered = false;
 	
+	int m_iAmountOfTimesRadioRotated = 1;
+	
 	override void EOnInit(IEntity owner)
 	{
 		super.EOnInit(owner);
@@ -211,9 +213,23 @@ modded class SCR_PlayerController
 					radioCompSetting.m_iVolume = radioSetting.m_iVolume;
 					radioCompSetting.m_eStereo = radioSetting.m_Stereo;
 				}
-				return;
 			}
 		}
+		
+		int count = m_aRadios.Count();
+		if (count < 2) return;
+		
+		for (int i = 0; i < m_iAmountOfTimesRadioRotated - 1; i++)
+		{
+			IEntity last = m_aRadios[count - 1];
+	
+		    for (int g = count - 1; g > 0; g--)
+		    {
+		        m_aRadios[g] = m_aRadios[g - 1];
+		    }
+		    m_aRadios[0] = last;
+		}
+		
 	}
 	
 	//mmmmgetter
@@ -455,33 +471,6 @@ modded class SCR_PlayerController
 			return;
 		
 		radioComp.AddChannelServer();
-	}
-	
-	//Because m_aRadios is tracked by just us and the authority, whenever we changed it the authority has to know as well.
-	//==========================================================================================================================================================================
-	void RotateActiveChannelServer()
-	{
-		Rpc(RpcAsk_RotateActiveChannelServer, SCR_PlayerController.GetLocalPlayerId());
-	}
-	
-	//==========================================================================================================================================================================
-	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
-	void RpcAsk_RotateActiveChannelServer(int playerId)
-	{
-		#ifdef WORKBENCH
-		#else
-		SCR_PlayerController playerController = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
-		int count = playerController.m_aRadios.Count();
-		if (count < 2) return;
-	
-		IEntity last = playerController.m_aRadios[count - 1];
-	
-	    for (int i = count - 1; i > 0; i--)
-	    {
-	        playerController.m_aRadios[i] = playerController.m_aRadios[i - 1];
-	    }
-	    playerController.m_aRadios[0] = last;
-		#endif
 	}
 	
 	void GrabHandMicServer(int playerId, RplId radioId)
