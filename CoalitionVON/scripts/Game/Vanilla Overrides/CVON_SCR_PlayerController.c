@@ -109,7 +109,8 @@ modded class SCR_PlayerController
 			return;
 		UpdateSettings();
 		
-		GetGame().GetCallqueue().CallLater(InitializeRadios, 500, false, to);
+		//Only this path may wipe m_aLocalEntries
+		GetGame().GetCallqueue().CallLater(InitializeRadios, 500, false, to, true);
 	}
 	
 	void UpdateSettings()
@@ -136,11 +137,15 @@ modded class SCR_PlayerController
 	//Handles initializing the m_aRadios array for both this client and the server so both are on the same page
 	//Also used to load any settings the radios may have had on respawn.
 	//Loading settings only works if the radios where pe configured with the CVON_FreqConfig.
-	void InitializeRadios(IEntity to)
+	//clearLocalEntries must ONLY be true when we swapped controlled entity. m_aLocalEntries is everyone we can currently
+	//hear, and the server only pushes an entry once at the start of a transmission - if we drop a speaker mid-message
+	//they are gone from VONData.json for the rest of it and teamspeak mutes them. ActivateCVON calls this on every PTT
+	//keydown, so clearing unconditionally made radios single duplex.
+	void InitializeRadios(IEntity to, bool clearLocalEntries = false)
 	{
 		if (!CVON_VONGameModeComponent.GetInstance())
 			return;
-		
+
 		if (GetGame().GetPlayerController())
 		{
 			SCR_VONController vonController = SCR_VONController.Cast(GetGame().GetPlayerController().FindComponent(SCR_VONController));
@@ -148,7 +153,8 @@ modded class SCR_PlayerController
 		}
 		m_aRadios.Clear();
 		//Reforger Lobby bs
-		m_aLocalEntries.Clear();
+		if (clearLocalEntries)
+			m_aLocalEntries.Clear();
 		array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(to);
 		if (!radios)
 			return;
