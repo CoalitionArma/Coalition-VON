@@ -367,8 +367,6 @@ modded class SCR_VONController
 		container.m_iClientId = m_PlayerController.GetTeamspeakClientId();
 		container.m_iPlayerId = m_PlayerController.GetLocalPlayerId();
 		
-		//Reinitialize our radios before trying to talk.
-		m_PlayerController.InitializeRadios(m_PlayerController.GetControlledEntity());
 		if (container.m_eVonType == CVON_EVONType.RADIO)
 		{
 			switch (transmitType)

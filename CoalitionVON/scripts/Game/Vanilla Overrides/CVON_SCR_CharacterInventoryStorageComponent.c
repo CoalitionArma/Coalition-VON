@@ -6,6 +6,11 @@ modded class SCR_CharacterInventoryStorageComponent
 	override void HandleOnItemAddedToInventory( IEntity item, BaseInventoryStorageComponent storageOwner )
 	{
 		super.HandleOnItemAddedToInventory(item, storageOwner);
+		#ifdef WORKBENCH
+		#else
+		if (Replication.IsServer())
+			return;
+		#endif
 		if (!CVON_VONGameModeComponent.GetInstance())
 			return;
 		
@@ -15,19 +20,13 @@ modded class SCR_CharacterInventoryStorageComponent
 		if (!item.FindComponent(CVON_RadioComponent))
 			return;
 		
-		int playerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(storageOwner.GetOwner().GetRootParent());
-		if (playerId <= 0)
+		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(item.FindComponent(CVON_RadioComponent));
+		if (!radioComp)
 			return;
 		
-		if (GetGame().GetPlayerController())
-			CVON_RadioComponent.Cast(item.FindComponent(CVON_RadioComponent)).WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
-		else
-		{
-			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(item.FindComponent(CVON_RadioComponent));
-			radioComp.InitializeRadios();
-		}
+		radioComp.WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
 		
-		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
+		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerController());
 		if (!pc)
 			return;
 		pc.m_aRadios.Insert(item);
@@ -36,6 +35,11 @@ modded class SCR_CharacterInventoryStorageComponent
 	override void HandleOnItemRemovedFromInventory( IEntity item, BaseInventoryStorageComponent storageOwner )
 	{
 		super.HandleOnItemRemovedFromInventory(item, storageOwner);
+		#ifdef WORKBENCH
+		#else
+		if (Replication.IsServer())
+			return;
+		#endif
 		if (!CVON_VONGameModeComponent.GetInstance())
 			return;
 		
@@ -45,14 +49,13 @@ modded class SCR_CharacterInventoryStorageComponent
 		if (!item.FindComponent(CVON_RadioComponent))
 			return;
 		
-		int playerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(storageOwner.GetOwner().GetRootParent());
-		if (playerId <= 0)
+		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(item.FindComponent(CVON_RadioComponent));
+		if (!radioComp)
 			return;
 		
-		if (GetGame().GetPlayerController())
-			CVON_RadioComponent.Cast(item.FindComponent(CVON_RadioComponent)).WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
+		radioComp.WriteJSON(SCR_PlayerController.GetLocalControlledEntity());
 		
-		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
+		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerController());
 		if (!pc)
 			return;
 		pc.m_aRadios.RemoveItemOrdered(item);
