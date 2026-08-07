@@ -28,6 +28,7 @@ FrameWidgetClass : "{8DE7D0C6EB809121}UI/layouts/Common/RadialMenu/radialMenu.la
     OffsetRight -75
     OffsetBottom -15
    }
+   "Is Visible" 0
    Color 0 0 0 1
    style outline_2px
    {
