@@ -10,6 +10,8 @@ class CVON_LowerHeadsetButton: SCR_ButtonTextComponent
 	
 	override bool OnClick(Widget w, int x, int y, int button)
 	{
+		return;
+		
 		if (!m_PlayerController)
 			return super.OnClick(w, x, y, button);
 		
