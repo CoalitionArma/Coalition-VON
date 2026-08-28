@@ -1100,6 +1100,11 @@ modded class SCR_VONController
 	bool IsSameLanguage(int localPlayerId, int transmissionPlayerId)
 	{
 		bool sameLanguage = true;
+		//During slotting (PREGAME) players/spectators have no faction assigned, which would otherwise
+		//be misread as differing factions and babble everyone. Never babble before the round starts.
+		if (m_BaseGamemode && m_BaseGamemode.GetState() == SCR_EGameModeState.PREGAME)
+			return sameLanguage;
+
 		if (m_FactionManager)
 			{
 				Faction localFaction = m_FactionManager.GetPlayerFaction(localPlayerId);
@@ -1107,7 +1112,7 @@ modded class SCR_VONController
 				if (localFaction != transmissionFaction && m_BaseGamemode.IsBabbelEnabled())
 					sameLanguage = false;
 			}
-		
+
 		return sameLanguage;
 	}
 
