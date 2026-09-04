@@ -544,11 +544,112 @@ modded class SCR_VONController
 	// VONServerData.json only needs to be checked at ~1 s; reading it every 50 ms
 	// was 20 unnecessary file reads per second just to detect a TSClientID update.
 	float m_fServerDataBuffer = 0;
-	// Dirty-flag tracking: last value of IsTransmitting written to VONData.json.
+	// Dirty-flag tracking: last value of IsTransmitting written to VONData.bin.
 	bool m_bLastWrittenTransmitting = false;
 	// Track how many entries were in m_aLocalEntries the last time we wrote to disk.
 	// If the count changes (e.g. the last speaker left range), we must force a write.
 	int m_iLastWrittenEntryCount = 0;
+
+	// VONData.bin wire format: fixed-size binary records instead of JSON text.
+	// Avoids per-frame string formatting on write and JSON parsing on the TS plugin's read side.
+	//
+	// Layout (matches plugin.c's parser):
+	//   [int]   magic, txFlag, count
+	//   [int]   per entry: clientId, vonType, muffledDb, sameLanguage   (4 * count ints)
+	//   [float] per entry: leftGain, rightGain, connQ, behindIntensity (4 * count floats)
+	//   [bytes] per entry: frequency[32], factionKey[32]
+	// The int and float fields are written as two batched WriteArray() calls instead of one
+	// Write() call per field. WriteArray only accepts a homogeneous array<int> or array<float>,
+	// so the two are batched separately rather than interleaved per-entry as before. Floats stay
+	// real floats (not fixed-point) since this is a raw binary write, not a text/ToString() path,
+	// so there's no locale-corruption risk to design around.
+	static const int CVON_VONDATA_MAGIC = 0x314E4F56; // "VON1", written little-endian
+	static const int CVON_VONDATA_FREQ_LEN = 32;
+	static const int CVON_VONDATA_FACTION_LEN = 32;
+	ref array<int>    m_aBinClientId = {};
+	ref array<int>    m_aBinVonType = {};
+	ref array<float>  m_aBinLeftGain = {};
+	ref array<float>  m_aBinRightGain = {};
+	ref array<int>    m_aBinMuffledDb = {};
+	ref array<float>  m_aBinConnQ = {};
+	ref array<float>  m_aBinBehindIntensity = {};
+	ref array<int>    m_aBinSameLanguage = {};
+	ref array<string> m_aBinFrequency = {};
+	ref array<string> m_aBinFactionKey = {};
+
+	// Reused scratch buffers for the batched WriteArray() calls below -- cleared and refilled
+	// each write instead of allocated fresh, same rationale as the m_aBin* accumulators.
+	ref array<int>   m_aVonIntBuffer = {};
+	ref array<float> m_aVonFloatBuffer = {};
+
+	// Kept open for the controller's lifetime instead of OpenFile/Close per write: repeatedly
+	// opening and closing a FileHandle is far more expensive than the writes themselves.
+	// Reset with Seek(0) before each write; closed in the destructor.
+	ref FileHandle m_VONDataFileHandle;
+
+	//Pads/truncates a string to exactly len characters so the fixed-size binary record
+	//stays byte-aligned with the native plugin's wire struct.
+	private string PadFixed(string s, int len)
+	{
+		if (s.Length() >= len)
+			return s.Substring(0, len);
+		string result = s;
+		while (result.Length() < len)
+			result += "\0";
+		return result;
+	}
+
+	private void EnsureVONDataFileOpen()
+	{
+		if (m_VONDataFileHandle)
+			return;
+		m_VONDataFileHandle = FileIO.OpenFile("$profile:/VONData.bin", FileMode.WRITE);
+	}
+
+	//Writes the accumulated m_aBin* entries to VONData.bin as fixed-size binary records.
+	//Batches all scalar fields into two WriteArray() calls instead of 8 * count individual
+	//Write() calls, and reuses a single open FileHandle instead of opening/closing every write.
+	private void WriteVONDataBinary(bool isTransmitting, int count)
+	{
+		EnsureVONDataFileOpen();
+		if (!m_VONDataFileHandle)
+			return;
+
+		int txFlag = 0;
+		if (isTransmitting)
+			txFlag = 1;
+
+		m_aVonIntBuffer.Clear();
+		m_aVonIntBuffer.Insert(CVON_VONDATA_MAGIC);
+		m_aVonIntBuffer.Insert(txFlag);
+		m_aVonIntBuffer.Insert(count);
+
+		m_aVonFloatBuffer.Clear();
+
+		for (int i = 0; i < count; i++)
+		{
+			m_aVonIntBuffer.Insert(m_aBinClientId[i]);
+			m_aVonIntBuffer.Insert(m_aBinVonType[i]);
+			m_aVonIntBuffer.Insert(m_aBinMuffledDb[i]);
+			m_aVonIntBuffer.Insert(m_aBinSameLanguage[i]);
+
+			m_aVonFloatBuffer.Insert(m_aBinLeftGain[i]);
+			m_aVonFloatBuffer.Insert(m_aBinRightGain[i]);
+			m_aVonFloatBuffer.Insert(m_aBinConnQ[i]);
+			m_aVonFloatBuffer.Insert(m_aBinBehindIntensity[i]);
+		}
+
+		m_VONDataFileHandle.Seek(0);
+		m_VONDataFileHandle.WriteArray(m_aVonIntBuffer);
+		m_VONDataFileHandle.WriteArray(m_aVonFloatBuffer);
+
+		for (int i = 0; i < count; i++)
+		{
+			m_VONDataFileHandle.Write(PadFixed(m_aBinFrequency[i], CVON_VONDATA_FREQ_LEN), CVON_VONDATA_FREQ_LEN);
+			m_VONDataFileHandle.Write(PadFixed(m_aBinFactionKey[i], CVON_VONDATA_FACTION_LEN), CVON_VONDATA_FACTION_LEN);
+		}
+	}
+
 	override void EOnFixedFrame(IEntity owner, float timeSlice)
 	{
 		super.EOnFixedFrame(owner, timeSlice);
@@ -584,7 +685,7 @@ modded class SCR_VONController
 		
 		if (!m_bFirstConnect)
 		{
-			WriteJSON(true, true);
+			UpdateVONData(true, true);
 			m_bFirstConnect = true;
 		}
 		
@@ -722,12 +823,12 @@ modded class SCR_VONController
 			m_bHasBroadcasted = true;
 		}
 		
-		// WriteJSON runs every tick; the dirty flag inside skips SaveToFile when nothing changed.
+		// UpdateVONData runs every tick; the dirty flag inside skips the binary flush when nothing changed.
 		m_fServerDataBuffer += timeSlice;
 		bool checkServerData = (m_fServerDataBuffer >= 1.0);
 		if (checkServerData)
 			m_fServerDataBuffer = 0;
-		WriteJSON(checkServerData);
+		UpdateVONData(checkServerData);
 	}
 	
 	//Thank god for CHATGPT
@@ -1134,15 +1235,15 @@ modded class SCR_VONController
 	//FactionKey, this always gets set but it just determines if encryption is enabled that we can hear the radio broadcast coming in.
 	
 	//Chain from broadcast is
-	//You broadcast to selected players -> They receive it in their player controller and add it locally -> 
-	//This WriteJson() method is being constantly called it will then write the data to the json for teamspeak to interpret ->
-	//Teamspeak reads the JSON, parses the data and compares it using the clientId to see if they should hear this baffoon ->
-	//The entry is removed from the local array and is no longer written to the JSON, there for teamspeak just mutes that client as he has no data in the JSON.
+	//You broadcast to selected players -> They receive it in their player controller and add it locally ->
+	//This UpdateVONData() method is being constantly called it will then write the data to VONData.bin for teamspeak to interpret ->
+	//Teamspeak reads VONData.bin, parses the data and compares it using the clientId to see if they should hear this baffoon ->
+	//The entry is removed from the local array and is no longer written to VONData.bin, there for teamspeak just mutes that client as he has no data in the file.
 	//==========================================================================================================================================================================
 	// checkServerData: when false, skip the VONServerData.json read entirely.
 	// Called every 50ms but checkServerData is only true once per second to avoid
 	// opening and parsing a file 20 times per second for data that rarely changes.
-	void WriteJSON(bool checkServerData = true, bool firstConnect = false)
+	void UpdateVONData(bool checkServerData = true, bool firstConnect = false)
 	{
 		if (!GetGame().GetPlayerController())
 			return;
@@ -1219,17 +1320,24 @@ modded class SCR_VONController
 				
 		}
 		#endif
-		SCR_JsonSaveContext VONSave = new SCR_JsonSaveContext();
-		VONSave.WriteValue("IsTransmitting", m_bIsBroadcasting);
+		m_aBinClientId.Clear();
+		m_aBinVonType.Clear();
+		m_aBinLeftGain.Clear();
+		m_aBinRightGain.Clear();
+		m_aBinMuffledDb.Clear();
+		m_aBinConnQ.Clear();
+		m_aBinBehindIntensity.Clear();
+		m_aBinSameLanguage.Clear();
+		m_aBinFrequency.Clear();
+		m_aBinFactionKey.Clear();
 		IEntity localEntity = m_Camera;
 		if (!localEntity)
 			return;
-		// Dirty flag: if nothing changed since the last write, skip SaveToFile entirely.
-		// JSON serialization still happens in memory (cheap); the disk write is what we avoid.
+		// Dirty flag: if nothing changed since the last write, skip the binary flush entirely.
 		// Also dirty when the entry count changes — this catches the case where the last
 		// speaker leaves range and is removed from m_aLocalEntries entirely: the foreach
 		// below never runs, so only this count comparison can trigger the flush that removes
-		// their entry from VONData.json and lets TeamSpeak mute them.
+		// their entry from VONData.bin and lets TeamSpeak mute them.
 		int currentEntryCount = m_PlayerController.m_aLocalEntries.Count();
 		bool dirty = (m_bIsBroadcasting != m_bLastWrittenTransmitting) ||
 					 (currentEntryCount != m_iLastWrittenEntryCount);
@@ -1312,19 +1420,19 @@ modded class SCR_VONController
 					dirty = true;
 			}
 				
-			VONSave.StartObject(m_PlayerController.GetPlayersTeamspeakClientId(playerId).ToString());
-			VONSave.SetMaxDecimalPlaces(3);
-			VONSave.WriteValue("VONType", container.m_eVonType);
-			VONSave.WriteValue("Frequency", frequency);
-			VONSave.WriteValue("LeftGain", left);
-			VONSave.WriteValue("RightGain", right);
-			VONSave.WriteValue("MuffledDecibels", loweredDecibels);
-			VONSave.WriteValue("ConnectionQuality", container.m_fConnectionQuality);
-			VONSave.WriteValue("FactionKey", container.m_sFactionKey);
-			VONSave.WriteValue("PlayerId", playerId);
-			VONSave.WriteValue("BehindIntensity", behindIntensity);
-			VONSave.WriteValue("SameLanguage", sameLanguage);
-			VONSave.EndObject();
+			int sameLanguageInt = 0;
+			if (sameLanguage)
+				sameLanguageInt = 1;
+			m_aBinClientId.Insert(m_PlayerController.GetPlayersTeamspeakClientId(playerId));
+			m_aBinVonType.Insert((int)container.m_eVonType);
+			m_aBinLeftGain.Insert(left);
+			m_aBinRightGain.Insert(right);
+			m_aBinMuffledDb.Insert(loweredDecibels);
+			m_aBinConnQ.Insert(container.m_fConnectionQuality);
+			m_aBinBehindIntensity.Insert(behindIntensity);
+			m_aBinSameLanguage.Insert(sameLanguageInt);
+			m_aBinFrequency.Insert(frequency);
+			m_aBinFactionKey.Insert(container.m_sFactionKey);
 
 			// Update the per-entry cache so we can detect the next change.
 			container.m_fCachedLeft    = left;
@@ -1337,7 +1445,7 @@ modded class SCR_VONController
 		}
 		if (dirty || firstConnect)
 		{
-			VONSave.SaveToFile("$profile:/VONData.json");
+			WriteVONDataBinary(m_bIsBroadcasting, m_aBinClientId.Count());
 			m_bLastWrittenTransmitting = m_bIsBroadcasting;
 			m_iLastWrittenEntryCount = currentEntryCount;
 		}
@@ -1349,6 +1457,12 @@ modded class SCR_VONController
 	//==========================================================================================================================================================================
 	void ~SCR_VONController()
 	{
+		if (m_VONDataFileHandle)
+		{
+			m_VONDataFileHandle.Close();
+			m_VONDataFileHandle = null;
+		}
+
 		if (m_aPlayerIdsBroadcastedTo.Count() > 0)
 		{
 			foreach (int playerId: m_aPlayerIdsBroadcastedTo)

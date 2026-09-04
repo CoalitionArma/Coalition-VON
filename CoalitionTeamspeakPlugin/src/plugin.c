@@ -2,7 +2,7 @@
  * CRF TeamSpeak 3 Proximity VOIP Plugin (Windows-only, Arma Reforger)
  *
  * - DIRECT (VONType=0):
- *     Uses LeftGain/RightGain from VONData.json (already spatialized by game).
+ *     Uses LeftGain/RightGain from VONData.bin (already spatialized by game).
  *     No plugin-side attenuation. We only apply a mild "yell" boost if the
  *     average L/R gain exceeds ~1.0 (interpreted as the game indicating shouting).
  *     NEW: Applies a muffle (low-pass) driven by MuffledDecibels (negative dB):
@@ -269,7 +269,7 @@ static void buildVONDataPath(char* outBuf, size_t bufSize)
         outBuf[0] = '\0';
         return;
     }
-    _snprintf(outBuf, (int)bufSize, "%s%sMy Games%sArmaReforger%sprofile%sVONData.json", docs, PATH_SEP, PATH_SEP, PATH_SEP, PATH_SEP);
+    _snprintf(outBuf, (int)bufSize, "%s%sMy Games%sArmaReforger%sprofile%sVONData.bin", docs, PATH_SEP, PATH_SEP, PATH_SEP, PATH_SEP);
 }
 static void buildServerJsonPath(char* outBuf, size_t bufSize)
 {
@@ -1173,7 +1173,50 @@ static void apply_direct_dsp(anyID clientID, const VonEntry* e, short* samples, 
 }
 
 /* ---------------------------------------------------------------------------
-   JSON loaders (using reusable buffers)
+   VONData.bin wire format
+   Written by CVON_SCR_VONController.WriteVONDataBinary via two batched
+   FileHandle.WriteArray() calls (int fields, then float fields) followed by
+   per-entry Write() calls for the two fixed strings -- WriteArray only takes
+   a homogeneous array<int> or array<float>, so the record can't stay a single
+   interleaved struct-per-entry the way a plain Write()-per-field loop could.
+   Layout must stay in lockstep with CVON_VONDATA_* constants and
+   WriteVONDataBinary() in CVON_SCR_VONController.c:
+     [VonWireHeader]                 1x
+     [VonWireIntBlock]    * count    (clientId, vonType, muffledDb, sameLanguage)
+     [VonWireFloatBlock]  * count    (leftGain, rightGain, connQ, behindIntensity)
+     [VonWireStringBlock] * count    (frequency[32], factionKey[32])
+--------------------------------------------------------------------------- */
+#define VONDATA_MAGIC 0x314E4F56 /* "VON1" little-endian */
+
+#pragma pack(push, 1)
+typedef struct {
+    int32_t magic;
+    int32_t isTransmitting;
+    int32_t entryCount;
+} VonWireHeader;
+
+typedef struct {
+    int32_t clientId;
+    int32_t vonType;
+    int32_t muffledDecibels;
+    int32_t sameLanguage;
+} VonWireIntBlock;
+
+typedef struct {
+    float leftGain;
+    float rightGain;
+    float connectionQuality;
+    float behindIntensity;
+} VonWireFloatBlock;
+
+typedef struct {
+    char frequency[32];
+    char factionKey[32];
+} VonWireStringBlock;
+#pragma pack(pop)
+
+/* ---------------------------------------------------------------------------
+   Loaders (using reusable buffers)
 --------------------------------------------------------------------------- */
 static int cmp_von_entry_by_id(const void* a, const void* b)
 {
@@ -1189,77 +1232,57 @@ static int load_von_into(VonSnapshot* dst)
     if (!read_file_reuse(g_VonPath, &g_vonBuf, &g_vonCap, &sz))
         return 0;
 
-    cJSON* root = cJSON_Parse(g_vonBuf);
-    if (!root)
+    if ((size_t)sz < sizeof(VonWireHeader))
         return 0;
 
-    size_t count = 0;
+    const VonWireHeader* hdr = (const VonWireHeader*)g_vonBuf;
+    if (hdr->magic != VONDATA_MAGIC || hdr->entryCount < 0)
+        return 0;
 
-    cJSON* tx = cJSON_GetObjectItem(root, "IsTransmitting");
-    if (cJSON_IsBool(tx))
-        g_IsTransmitting = tx->valueint;
+    size_t count = (size_t)hdr->entryCount;
+    if (count > MAX_TRACKED)
+        count = MAX_TRACKED;
 
-    cJSON* it;
-    cJSON_ArrayForEach(it, root)
+    /* Guards against a torn read if the game process is mid-write when we poll. */
+    size_t needed = sizeof(VonWireHeader)
+                   + count * sizeof(VonWireIntBlock)
+                   + count * sizeof(VonWireFloatBlock)
+                   + count * sizeof(VonWireStringBlock);
+    if ((size_t)sz < needed)
+        return 0;
+
+    g_IsTransmitting = hdr->isTransmitting ? 1 : 0;
+
+    const VonWireIntBlock*    ints    = (const VonWireIntBlock*)(g_vonBuf + sizeof(VonWireHeader));
+    const VonWireFloatBlock*  floats  = (const VonWireFloatBlock*)((const char*)ints + count * sizeof(VonWireIntBlock));
+    const VonWireStringBlock* strings = (const VonWireStringBlock*)((const char*)floats + count * sizeof(VonWireFloatBlock));
+
+    for (size_t i = 0; i < count; ++i)
     {
-        if (!it->string || strcmp(it->string, "IsTransmitting") == 0)
-            continue;
-        if (count >= MAX_TRACKED)
-            break;
-
         VonEntry e;
         memset(&e, 0, sizeof(e));
-        e.id        = (anyID)atoi(it->string);
-        e.type      = VON_DIRECT;
-        e.connQ     = 1.0f;
-        e.txTimeDev = INT_MIN;
+        e.id              = (anyID)ints[i].clientId;
+        e.type            = (ints[i].vonType == 1) ? VON_RADIO : VON_DIRECT;
+        e.leftGain        = floats[i].leftGain;
+        e.rightGain       = floats[i].rightGain;
+        e.muffledDb       = (float)ints[i].muffledDecibels;
+        e.connQ           = clampf(floats[i].connectionQuality, 0.0f, 1.0f);
+        e.behindIntensity = clampf(floats[i].behindIntensity, 0.0f, 1.0f);
+        e.sameLanguage    = ints[i].sameLanguage;
+        e.txTimeDev       = INT_MIN;
 
-        cJSON* v;
-        v = cJSON_GetObjectItem(it, "VONType");
-        if (cJSON_IsNumber(v))
-            e.type = (v->valueint == 1) ? VON_RADIO : VON_DIRECT;
-        v = cJSON_GetObjectItem(it, "LeftGain");
-        if (cJSON_IsNumber(v))
-            e.leftGain = (float)v->valuedouble;
-        v = cJSON_GetObjectItem(it, "RightGain");
-        if (cJSON_IsNumber(v))
-            e.rightGain = (float)v->valuedouble;
-        v = cJSON_GetObjectItem(it, "Frequency");
-        if (cJSON_IsString(v)) {
-            strncpy(e.txFreq, v->valuestring, sizeof(e.txFreq) - 1);
-            trim_inplace(e.txFreq);
-        }
-        v = cJSON_GetObjectItem(it, "TimeDeviation");
-        if (cJSON_IsNumber(v))
-            e.txTimeDev = v->valueint;
-        v = cJSON_GetObjectItem(it, "ConnectionQuality");
-        if (cJSON_IsNumber(v))
-            e.connQ = clampf((float)v->valuedouble, 0.0f, 1.0f);
-        v = cJSON_GetObjectItem(it, "FactionKey");
-        if (cJSON_IsString(v)) {
-            strncpy(e.txFaction, v->valuestring, sizeof(e.txFaction) - 1);
-            trim_inplace(e.txFaction);
-        }
-        v = cJSON_GetObjectItem(it, "MuffledDecibels");
-        if (cJSON_IsNumber(v))
-            e.muffledDb = (float)v->valuedouble;
+        memcpy(e.txFreq, strings[i].frequency, sizeof(strings[i].frequency));
+        e.txFreq[sizeof(strings[i].frequency)] = '\0';
+        trim_inplace(e.txFreq);
 
-        v = cJSON_GetObjectItem(it, "BehindIntensity");
-        if (cJSON_IsNumber(v))
-            e.behindIntensity = clampf((float)v->valuedouble, 0.0f, 1.0f);
-
-        v = cJSON_GetObjectItem(it, "SameLanguage");
-        if (cJSON_IsBool(v))
-            e.sameLanguage = v->valueint;
-        else
-            e.sameLanguage = 1; /* default to same language if not specified */
+        memcpy(e.txFaction, strings[i].factionKey, sizeof(strings[i].factionKey));
+        e.txFaction[sizeof(strings[i].factionKey)] = '\0';
+        trim_inplace(e.txFaction);
 
         e.lastUpdateTick = GetTickCount();
 
-        dst->entries[count++] = e;
+        dst->entries[i] = e;
     }
-
-    cJSON_Delete(root);
 
     dst->count     = count;
     dst->loaded    = 1;
