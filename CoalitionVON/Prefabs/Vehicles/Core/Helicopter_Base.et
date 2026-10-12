@@ -1,0 +1,15 @@
+Vehicle {
+ ID "57DA6675519A417B"
+ components {
+  CVON_VehicleRadioComponent "{691B3C78B40B03BC}" {
+   m_sRadioName "Vehicle Radio"
+   m_eRadioType LONG
+   m_iRadioRange 15000
+   m_sRadioIcon "{FFB5DD736483D225}UI/layouts/Radios/ANPRC117/data/ANPRC117Icon.edds"
+   m_sDialOn "{52C708D6FBA2E5CA}UI/layouts/Radios/ANPRC117/data/ANPRC117DialOn.edds"
+   m_sDialOff "{A744E80C100B0FC5}UI/layouts/Radios/ANPRC117/data/ANPRC117DialOff.edds"
+   m_eRadioMenu ANPRC117
+   m_iSpeakerRange 25
+  }
+ }
+}
