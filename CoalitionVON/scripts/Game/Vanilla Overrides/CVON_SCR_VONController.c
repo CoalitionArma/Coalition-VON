@@ -743,7 +743,7 @@ modded class SCR_VONController
 		m_aEntriesToRemove.Clear();
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
-			if (!m_PlayerIdSet.Contains(playerId))
+			if (!m_PlayerIdSet.Contains(playerId) || (container.m_bIsSpectator && !IsSpectatorTalker(playerId)))
 			{
 				m_aEntriesToRemove.Insert(playerId);
 				continue;
@@ -776,6 +776,30 @@ modded class SCR_VONController
 
 			CVON_VONContainer existing = m_PlayerController.m_aLocalEntries.Get(playerId);
 			IEntity player = m_PlayerManager.GetPlayerControlledEntity(playerId);
+
+			//Addon channels (e.g. spectators): heard at any distance, gains from ComputeSpectatorLR
+			if (HearOverChannel(playerId))
+			{
+				if (!existing)
+				{
+					existing = new CVON_VONContainer();
+					existing.m_eVonType = CVON_EVONType.DIRECT;
+					existing.m_iVolume = m_VONGameModeComponent.GetPlayerVolume(playerId);
+					existing.m_iClientId = m_PlayerController.GetPlayersTeamspeakClientId(playerId);
+					existing.m_iPlayerId = playerId;
+					if (player)
+					{
+						RplComponent channelRpl = RplComponent.Cast(player.FindComponent(RplComponent));
+						if (channelRpl)
+							existing.m_SenderRplId = channelRpl.Id();
+					}
+					m_PlayerController.m_aLocalEntries.Insert(playerId, existing);
+				}
+				existing.m_bIsSpectator = true;
+				existing.m_bOnIntercom = false;
+				continue;
+			}
+
 			if (!player)
 			{
 				//Radio and speaker entries come and go by RPC
@@ -818,6 +842,7 @@ modded class SCR_VONController
 			if (existing)
 			{
 				existing.m_bOnIntercom = onIntercom;
+				existing.m_bIsSpectator = IsSpectatorTalker(playerId);
 				continue;
 			}
 
@@ -828,6 +853,7 @@ modded class SCR_VONController
 			container.m_iClientId = m_PlayerController.GetPlayersTeamspeakClientId(playerId);
 			container.m_iPlayerId = playerId;
 			container.m_bOnIntercom = onIntercom;
+			container.m_bIsSpectator = IsSpectatorTalker(playerId);
 			m_PlayerController.m_aLocalEntries.Insert(playerId, container);
 		}
 	}
@@ -836,6 +862,26 @@ modded class SCR_VONController
 	static bool IsServerManaged(CVON_VONContainer container)
 	{
 		return container.m_eVonType == CVON_EVONType.RADIO || container.m_eVonType == CVON_EVONType.SPEAKER;
+	}
+
+	//Hooks for addons such as COALITION-Lobby (spectator channels, AAR). The defaults change nothing.
+	//==========================================================================================================================================================================
+	//A talker whose gains come from ComputeSpectatorLR rather than their position (container.m_bIsSpectator)
+	bool IsSpectatorTalker(int playerId)
+	{
+		return false;
+	}
+
+	//Hear this talker whatever the distance, even when their character isn't streamed in
+	bool HearOverChannel(int playerId)
+	{
+		return false;
+	}
+
+	//Replace a talker's gains (e.g. silence in-world voices during the end credits); true when set
+	bool OverrideTalkerGains(int playerId, out float left, out float right)
+	{
+		return false;
 	}
 
 	//Vehicle comms
@@ -955,7 +1001,8 @@ modded class SCR_VONController
 			return OCCLUSION_DB_VEHICLE;
 		if (loweredDecibels == CVON_DB_ATTEN_BUILDING)
 			return OCCLUSION_DB_BUILDING;
-		return 0.0;
+		//Any other amount (e.g. an addon stacking two buildings at -24): in proportion to a building
+		return loweredDecibels * (OCCLUSION_DB_BUILDING / CVON_DB_ATTEN_BUILDING);
 	}
 
 	//Full volume up to VOICE_REFERENCE_DISTANCE, then inverse distance (-6 dB per doubling), with the last
@@ -1544,6 +1591,10 @@ modded class SCR_VONController
 			else if (container.m_bIsSpectator)
 			{
 				ComputeSpectatorLR(playerId, left, right);
+			}
+			else if (OverrideTalkerGains(playerId, left, right))
+			{
+				//Gains set by an addon
 			}
 			else if (container.m_bOnIntercom)
 			{
