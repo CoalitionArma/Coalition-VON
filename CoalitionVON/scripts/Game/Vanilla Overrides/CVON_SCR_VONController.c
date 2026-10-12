@@ -157,6 +157,7 @@ modded class SCR_VONController
 			m_InputManager.AddActionListener("VONRadioEarLeft", EActionTrigger.DOWN, SetActiveEarLeft);
 			m_InputManager.AddActionListener("VONRadioEarBoth", EActionTrigger.DOWN, SetActiveEarBoth);
 			m_InputManager.AddActionListener("VONVehicleSpeaker", EActionTrigger.DOWN, ToggleVehicleSpeaker);
+			m_InputManager.AddActionListener("VONVehicleKeyFill", EActionTrigger.DOWN, KeyFillVehicleRadio);
 		}
 
 		SCR_PlayerController playerController = SCR_PlayerController.Cast(GetOwner());
@@ -244,7 +245,7 @@ modded class SCR_VONController
 			return;
 
 		CVON_VehicleRadioComponent radio = CVON_VehicleComms.GetOperatedRadio(m_Player);
-		if (!radio || !radio.m_bHasSpeaker)
+		if (!radio || !radio.HasSpeaker())
 			return;
 
 		m_PlayerController.ToggleVehicleSpeaker(radio.GetRplId());
@@ -255,6 +256,32 @@ modded class SCR_VONController
 			SCR_HintManagerComponent.ShowCustomHint("Vehicle radio speaker on", "Coalition VON", 2);
 	}
 
+	//Keybind: crew load their encryption key and channels into the vehicle radio. Until someone does, it
+	//keeps its key and goes on playing that traffic.
+	//==========================================================================================================================================================================
+	void KeyFillVehicleRadio()
+	{
+		if (!m_Player || !m_PlayerController)
+			return;
+		
+		CVON_VehicleRadioComponent radio = CVON_VehicleComms.GetOperatedRadio(m_Player);
+		if (!radio)
+			return;
+		
+		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(m_Player.FindComponent(FactionAffiliationComponent));
+		if (!factionComp || factionComp.GetAffiliatedFactionKey() == "")
+			return;
+		
+		if (radio.SharesKey(factionComp.GetAffiliatedFactionKey()))
+		{
+			SCR_HintManagerComponent.ShowCustomHint("Vehicle radio is already on your encryption", "Coalition VON", 2);
+			return;
+		}
+		
+		m_PlayerController.KeyFillVehicleRadio(radio.GetRplId());
+		SCR_HintManagerComponent.ShowCustomHint("Vehicle radio filled with your encryption and channels", "Coalition VON", 3);
+	}
+	
 	//Keybind to open active radio
 	//==========================================================================================================================================================================
 	void OpenActiveRadio()
@@ -910,12 +937,20 @@ modded class SCR_VONController
 		if (!commsVehicle)
 			return;
 
+		string hint = "Vehicle radio connected";
 		if (m_IntercomVehicle && radio)
-			SCR_HintManagerComponent.ShowCustomHint("Vehicle intercom and radio connected", "Coalition VON", 3);
+			hint = "Vehicle intercom and radio connected";
 		else if (m_IntercomVehicle)
-			SCR_HintManagerComponent.ShowCustomHint("Vehicle intercom connected", "Coalition VON", 3);
-		else
-			SCR_HintManagerComponent.ShowCustomHint("Vehicle radio connected", "Coalition VON", 3);
+			hint = "Vehicle intercom connected";
+
+		//Radio on someone else's encryption: it keeps playing their traffic until a crew member fills it
+		if (radio && radio.m_sFactionKey != "")
+		{
+			FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(m_Player.FindComponent(FactionAffiliationComponent));
+			if (factionComp && factionComp.GetAffiliatedFactionKey() != "" && !radio.SharesKey(factionComp.GetAffiliatedFactionKey()))
+				hint += ". The radio is on another encryption: fill it with yours to use your channels.";
+		}
+		SCR_HintManagerComponent.ShowCustomHint(hint, "Coalition VON", 4);
 	}
 
 	//Reads what the TeamSpeak plugin supports (VONPluginInfo.json) and who is talking (VONTalking.json).
@@ -968,9 +1003,10 @@ modded class SCR_VONController
 	//direction. The values to tune by ear are grouped here.
 	//==========================================================================================================================================================================
 	static const float MAX_OUT_GAIN = 2.0;				// safety cap on per-ear gain (the loudest tier is +5 dB)
-	static const float VOICE_REFERENCE_DISTANCE = 2.0;	// full volume up to this distance (m); beyond it a voice loses
-														// 6 dB per doubling of distance, like speech in open air
-	static const float VOICE_EDGE_FADE = 0.2;			// the last 20% of the voice range fades to silence
+	static const float VOICE_REFERENCE_DISTANCE = 1.5;	// full volume up to this distance (m), or 30% of a shorter range
+	static const float VOICE_ROLLOFF_DB = 36.0;			// how much quieter a voice is by the start of the edge fade...
+	static const float VOICE_ROLLOFF_SHAPE = 0.8;		// ...falling steadily in dB across the range; below 1 drops a little faster early on
+	static const float VOICE_EDGE_FADE = 0.15;			// the last 15% of the voice range fades to silence
 	static const float OCCLUSION_DB_BUILDING = -8.0;	// talker or listener inside a building (the plugin also dulls the sound)
 	static const float OCCLUSION_DB_VEHICLE = -12.0;	// ... inside a vehicle
 	static const float STEREO_CROSSFEED = 0.25;			// share of each ear's signal also heard in the other (0 = fully one ear)
@@ -1005,16 +1041,22 @@ modded class SCR_VONController
 		return loweredDecibels * (OCCLUSION_DB_BUILDING / CVON_DB_ATTEN_BUILDING);
 	}
 
-	//Full volume up to VOICE_REFERENCE_DISTANCE, then inverse distance (-6 dB per doubling), with the last
-	//VOICE_EDGE_FADE of the range fading smoothly to silence so the cut-off is never heard
+	//Full volume up close, then a steady drop in dB across the whole range (about -10 dB a quarter of the way
+	//out, -20 dB at half, -28 dB at three quarters), so a voice gets clearly quieter all the way out instead of
+	//staying loud until the edge. The last VOICE_EDGE_FADE then fades it to silence, from an already quiet level.
 	static float DistanceGain(float d_m, float range_m)
 	{
 		if (range_m <= 0.01 || d_m >= range_m)
 			return 0;
 
+		// Enforce: 'reference' is reserved, and locals are function-scoped (no reusing a name in another block)
+		float fullVolumeDist = Math.Min(VOICE_REFERENCE_DISTANCE, range_m * 0.3);
 		float gain = 1.0;
-		if (d_m > VOICE_REFERENCE_DISTANCE)
-			gain = VOICE_REFERENCE_DISTANCE / d_m;
+		if (d_m > fullVolumeDist)
+		{
+			float rolloff = (d_m - fullVolumeDist) / (range_m - fullVolumeDist);
+			gain = GainFromDb(-VOICE_ROLLOFF_DB * Math.Pow(rolloff, VOICE_ROLLOFF_SHAPE));
+		}
 
 		float x = d_m / range_m;
 		float fadeStart = 1.0 - VOICE_EDGE_FADE;

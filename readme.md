@@ -87,8 +87,10 @@ Plugins before 3.0 play types 2 and 3 as direct speech.
 
 # Vehicle radios and intercom
 
-`CVON_VehicleRadioComponent` gives a vehicle a radio, a speaker and an intercom. The mod adds it to the vanilla `TrackedVehicle_Base`, `Wheeled_APC_Base` and `Helicopter_Base` prefabs, so vehicles inheriting from those have comms; add it to any other vehicle prefab (or remove it) in Workbench. Settings on the component:
+`CVON_VehicleRadioComponent` gives a vehicle a radio, a speaker and an intercom. The mod adds it to the vanilla `TrackedVehicle_Base`, `Wheeled_APC_Base`, `Helicopter_Base`, `Wheeled_Car_Base` and `Wheeled_Truck_Base` prefabs, so vehicles inheriting from those have comms; add it to any other vehicle prefab (or remove it) in Workbench. Settings on the component:
 
-- `m_bHasRadio`, `m_sRadioName`, `m_iRadioRange`, `m_eRadioMenu`: the radio. Only the crew (driver/pilot and turret seats: gunner, commander, door gunner) can use it. While seated it is added after their own radios, on the next free radio key; it opens and tunes like any radio. It takes the vehicle's faction key, or its first crew member's if the vehicle had none.
+- `m_bMilitaryOnly`: comms only when the vehicle's default faction is a military one (`SCR_Faction.IsMilitary`). On for the car and truck bases, which civilian vehicles share; a vehicle with a civilian or no default faction gets nothing.
+
+- `m_bHasRadio`, `m_sRadioName`, `m_iRadioRange`, `m_eRadioMenu`: the radio. Only the crew (driver/pilot and turret seats: gunner, commander, door gunner) can use it. While seated it is added after their own radios, on the next free radio key; it opens and tunes like any radio. It starts on the vehicle's prefab faction key and keeps it, playing that traffic, until a crew member fills it with the "Fill Vehicle Radio With Your Encryption" keybind (Left Ctrl + Home): it then takes their faction key and the channel list of their own radio (or their faction's channels if they carry none). A radio with no key at all (a vehicle without a faction) is filled automatically by the first crew member.
 - `m_bHasSpeaker`, `m_iSpeakerRange` (25 m): the radio plays out loud. Players near the vehicle hear its traffic unless they have the frequency themselves or are close enough to hear the sender. The crew toggle it with the "Toggle Vehicle Radio Speaker" keybind (Left Ctrl + End).
 - `m_bHasIntercom`, `m_bPassengersOnIntercom` (off): crew hear each other clearly whenever they talk, at any distance between seats. Passenger seats join too when enabled.

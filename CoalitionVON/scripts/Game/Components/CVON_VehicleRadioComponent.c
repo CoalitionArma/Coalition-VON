@@ -2,8 +2,9 @@ class CVON_VehicleRadioComponentClass: CVON_RadioComponentClass
 {
 }
 
-//A radio built into a vehicle, plus the vehicle's intercom. The mod adds it to the tracked, wheeled APC
-//and helicopter base prefabs; add it to any other vehicle prefab to give that vehicle comms.
+//A radio built into a vehicle, plus the vehicle's intercom. The mod adds it to the tracked, wheeled APC,
+//helicopter, car and truck base prefabs (cars and trucks military only: their default faction must be
+//military, so civilian vehicles get nothing); add it to any other vehicle prefab to give that vehicle comms.
 //
 //Radio: only the crew (driver/pilot and turret seats: gunner, commander, door gunner) can use it. While
 //seated it sits at the end of their radio list, so it's on whichever radio key comes after their own
@@ -29,6 +30,13 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 
 	[Attribute("25", desc: "Metres from the vehicle at which the speaker fades out")]
 	int m_iSpeakerRange;
+	
+	[Attribute("0", desc: "Comms only when the vehicle's default faction is military. For base prefabs shared with civilian vehicles (cars, trucks).")]
+	bool m_bMilitaryOnly;
+	
+	//Military check result: -1 not worked out yet, 0 civilian, 1 military. Comes from prefab data (the
+	//default faction), so every machine reaches the same answer.
+	protected int m_iMilitaryState = -1;
 
 	[RplProp()]
 	bool m_bSpeakerOn = true;
@@ -51,9 +59,48 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		return CVON_VehicleComms.GetOperatedRadio(local) == this;
 	}
 
+	//Does this vehicle get comms at all (see m_bMilitaryOnly)
+	bool IsEquipped()
+	{
+		if (!m_bMilitaryOnly)
+			return true;
+		
+		if (m_iMilitaryState < 0)
+		{
+			//Factions not loaded yet: decide later rather than caching "civilian"
+			if (!GetGame().GetFactionManager())
+				return false;
+			
+			m_iMilitaryState = 0;
+			FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(GetOwner().FindComponent(FactionAffiliationComponent));
+			if (factionComp)
+			{
+				SCR_Faction faction = SCR_Faction.Cast(factionComp.GetDefaultAffiliatedFaction());
+				if (faction && faction.IsMilitary())
+					m_iMilitaryState = 1;
+			}
+		}
+		return m_iMilitaryState == 1;
+	}
+	
+	bool HasRadio()
+	{
+		return m_bHasRadio && IsEquipped();
+	}
+	
+	bool HasIntercom()
+	{
+		return m_bHasIntercom && IsEquipped();
+	}
+	
+	bool HasSpeaker()
+	{
+		return m_bHasSpeaker && HasRadio();
+	}
+	
 	bool HasActiveSpeaker()
 	{
-		return m_bHasRadio && m_bHasSpeaker && m_bSpeakerOn && m_bPower;
+		return HasSpeaker() && m_bSpeakerOn && m_bPower;
 	}
 
 	//==========================================================================================================================================================================
@@ -65,7 +112,7 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 	}
 
 	//Authority, once: register with the gamemode so transmissions can find this speaker, and take the
-	//vehicle's faction. A vehicle without one (civilian, unclaimed) gets its first crew member's instead.
+	//vehicle's faction until a crew member key-fills it with theirs (KeyFillFromCrew, VONVehicleKeyFill keybind).
 	//==========================================================================================================================================================================
 	override void EOnFrame(IEntity owner, float timeSlice)
 	{
@@ -74,7 +121,7 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 			return;
 
 		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
-		if (!gamemode || !m_bHasRadio)
+		if (!gamemode || !HasRadio())
 			return;
 
 		gamemode.RegisterVehicleRadio(this);
@@ -84,7 +131,7 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 	//==========================================================================================================================================================================
 	override void InitializeRadios()
 	{
-		if (!m_bHasRadio || m_sFactionKey != "")
+		if (!HasRadio() || m_sFactionKey != "")
 			return;
 
 		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(GetOwner().FindComponent(FactionAffiliationComponent));
@@ -97,16 +144,85 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		InitializeForFaction(factionKey);
 	}
 
-	//Authority: a crew member is using a radio that has no faction yet; it takes theirs
+	//Authority: "key fill", done by a crew member with the VONVehicleKeyFill keybind (or automatically when
+	//the radio has no key at all). If the radio isn't on their encryption it takes their key and channels,
+	//copied from their own radio so it matches however the mission set their radios up (frequency config,
+	//the Lobby's faction channels); with no radio of their own, from their faction. Until then it keeps its
+	//key and goes on playing that traffic. A vehicle's prefab faction often isn't the players' (vanilla "US"
+	//vehicles, "BLUFOR" players).
 	//==========================================================================================================================================================================
-	void InitializeForCrew(IEntity character)
+	void KeyFillFromCrew(IEntity character)
 	{
-		if (!m_bHasRadio || m_sFactionKey != "" || !character)
+		if (!HasRadio() || !character)
 			return;
 
 		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(character.FindComponent(FactionAffiliationComponent));
-		if (factionComp)
-			InitializeForFaction(factionComp.GetAffiliatedFactionKey());
+		if (!factionComp)
+			return;
+
+		string crewKey = factionComp.GetAffiliatedFactionKey();
+		if (crewKey == "" || SharesKey(crewKey))
+			return;
+
+		m_aChannels.Clear();
+		CVON_RadioComponent crewRadio = FindCrewRadio(character);
+		if (crewRadio && !crewRadio.m_aChannels.IsEmpty())
+		{
+			m_sFactionKey = crewKey;
+			m_sOriginalFactionKey = crewKey;
+			m_aChannels.InsertAll(crewRadio.m_aChannels);
+		}
+		else
+		{
+			InitializeForFaction(crewKey);
+		}
+
+		if (m_aChannels.IsEmpty())
+			m_aChannels.Insert("55500");
+		m_iCurrentChannel = 1;
+		m_sFrequency = m_aChannels.Get(0);
+		BumpAndNotify();
+	}
+
+	//Already on this key: the faction's own, or a shared-frequency key listing it ("US|BLUFOR|")
+	bool SharesKey(string factionKey)
+	{
+		if (m_sFactionKey == factionKey)
+			return true;
+
+		array<string> sharedKeys = {};
+		m_sFactionKey.Split("|", sharedKeys, true);
+		return sharedKeys.Contains(factionKey);
+	}
+
+	//The crew member's own radio to copy channels from: a long-range one if they have it
+	protected CVON_RadioComponent FindCrewRadio(IEntity character)
+	{
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (!gamemode)
+			return null;
+
+		array<IEntity> radios = gamemode.GetRadioEntities(character);
+		if (!radios)
+			return null;
+
+		CVON_RadioComponent firstRadio;
+		foreach (IEntity radio: radios)
+		{
+			if (radio == GetOwner())
+				continue;
+
+			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+			if (!radioComp || CVON_VehicleRadioComponent.Cast(radioComp))
+				continue;
+
+			if (radioComp.m_eRadioType == CVON_ERadioType.LONG)
+				return radioComp;
+
+			if (!firstRadio)
+				firstRadio = radioComp;
+		}
+		return firstRadio;
 	}
 
 	//==========================================================================================================================================================================
@@ -185,7 +301,7 @@ class CVON_VehicleComms
 			return null;
 
 		CVON_VehicleRadioComponent comms = GetVehicleComms(seat);
-		if (!comms || !comms.m_bHasRadio)
+		if (!comms || !comms.HasRadio())
 			return null;
 		return comms;
 	}
@@ -198,7 +314,7 @@ class CVON_VehicleComms
 			return null;
 
 		CVON_VehicleRadioComponent comms = GetVehicleComms(seat);
-		if (!comms || !comms.m_bHasIntercom)
+		if (!comms || !comms.HasIntercom())
 			return null;
 
 		if (!IsCrewSeat(seat) && !comms.m_bPassengersOnIntercom)

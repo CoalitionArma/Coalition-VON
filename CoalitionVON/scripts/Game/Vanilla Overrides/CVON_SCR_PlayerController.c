@@ -16,7 +16,8 @@ modded class SCR_PlayerController
 	string m_sTeamspeakPluginVersion = "0";
 	
 	//How we link what level the enum below should be at.
-	static ref array<int> m_aVolumeValues = {3, 8, 25, 40, 60};
+	//Voice range in metres per tier: Whisper, Close Contact, Normal, Yelling, Manager
+	static ref array<int> m_aVolumeValues = {3, 8, 20, 40, 60};
 	
 	//Teamspeak has been detected, also used to not have the annoying game locking popup everytime TS wants to crash
 	bool m_bHasConnectedToTeamspeakForFirstTime = false;
@@ -141,23 +142,34 @@ modded class SCR_PlayerController
 		if (radio)
 			radioEntity = radio.GetOwner();
 
+		bool newRadio = false;
+		if (radioEntity)
+			newRadio = radioEntity != m_VehicleRadio;
 		if (m_VehicleRadio && m_VehicleRadio != radioEntity)
 			m_aRadios.RemoveItemOrdered(m_VehicleRadio);
 		if (radioEntity && !m_aRadios.Contains(radioEntity))
 			m_aRadios.Insert(radioEntity);
 		m_VehicleRadio = radioEntity;
 
-		//A vehicle that had no faction when it spawned gets our key and channels
-		if (radio && radio.m_sFactionKey == "")
-			Rpc(RpcAsk_InitializeVehicleRadio, radio.GetRplId());
+		//A radio with no key at all (vehicle without a faction) has no traffic to keep: fill it straight away.
+		//Otherwise it stays on its key until a crew member fills it (VONVehicleKeyFill keybind).
+		if (newRadio && radio.m_sFactionKey == "")
+			KeyFillVehicleRadio(radio.GetRplId());
 
 		//RadioData.json and the server's frequency index follow the new radio list
 		if (character)
 			CVON_RadioComponent.WriteRadioData(character);
 	}
 
+	//Crew only: load our encryption key and channels into the vehicle radio (CVON_VehicleRadioComponent.KeyFillFromCrew)
+	//==========================================================================================================================================================================
+	void KeyFillVehicleRadio(RplId radioId)
+	{
+		Rpc(RpcAsk_KeyFillVehicleRadio, radioId);
+	}
+
 	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
-	void RpcAsk_InitializeVehicleRadio(RplId radioId)
+	void RpcAsk_KeyFillVehicleRadio(RplId radioId)
 	{
 		CVON_VehicleRadioComponent radio = CVON_VehicleRadioComponent.Cast(FindRadioComponent(radioId));
 		if (!radio)
@@ -166,7 +178,7 @@ modded class SCR_PlayerController
 		IEntity player = GetControlledEntity();
 		if (CVON_VehicleComms.GetOperatedRadio(player) != radio)
 			return;
-		radio.InitializeForCrew(player);
+		radio.KeyFillFromCrew(player);
 	}
 
 	//Only the crew can turn the speaker on or off

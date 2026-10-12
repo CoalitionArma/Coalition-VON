@@ -2826,7 +2826,7 @@ PLUGINS_EXPORTDLL const char* ts3plugin_name()
 }
 PLUGINS_EXPORTDLL const char* ts3plugin_version()
 {
-    return "3.0.0";
+    return "3.0.1";
 }
 PLUGINS_EXPORTDLL int ts3plugin_apiVersion()
 {
