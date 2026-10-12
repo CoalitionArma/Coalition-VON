@@ -278,11 +278,27 @@ class CVON_VehicleComms
 		return null;
 	}
 
-	//Crew: driver/pilot and turret seats (gunner, commander, door gunner). Cargo seats are passengers.
+	//Crew: driver/pilot and turret seats (gunner, door gunner), plus commanders. Vanilla often makes the
+	//commander a cargo seat linked to a commander's sight turret (LAV-25), so a cargo seat that operates a
+	//turret, or is labelled as the commander's, counts too. Other cargo seats are passengers.
 	static bool IsCrewSeat(BaseCompartmentSlot seat)
 	{
 		ECompartmentType type = seat.GetType();
-		return type == ECompartmentType.PILOT || type == ECompartmentType.TURRET;
+		if (type == ECompartmentType.PILOT || type == ECompartmentType.TURRET)
+			return true;
+
+		if (seat.GetAttachedTurret() || !seat.GetAutoConnectTurret().IsEmpty())
+			return true;
+
+		UIInfo info = seat.GetUIInfo();
+		if (info)
+		{
+			string seatName = info.GetName();
+			seatName.ToLower();
+			if (seatName.Contains("commander"))
+				return true;
+		}
+		return false;
 	}
 
 	static CVON_VehicleRadioComponent GetVehicleComms(BaseCompartmentSlot seat)
