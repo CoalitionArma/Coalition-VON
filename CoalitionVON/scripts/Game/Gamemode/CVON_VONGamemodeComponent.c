@@ -32,7 +32,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	string m_sTeamspeakPluginVersion = "3.0.1";
 	ref map <int, string> m_PlayerFreqArray = new map <int, string>;
 	ref map <int, string> m_PlayerKeyArray = new map <int, string>;
-	
+
 	// Server: which players have a radio on each frequency, kept current from UpdateFreqArray. A radio
 	// transmission only looks at these players instead of splitting every player's frequency list and
 	// scanning their inventory.
@@ -41,36 +41,44 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	// (it used to go to every player on every push-to-talk release).
 	ref map<int, ref array<int>> m_mBroadcastReceivers = new map<int, ref array<int>>();
 
-	// Server: every vehicle radio, so a transmission can find the speakers tuned to its frequency
-	ref array<CVON_VehicleRadioComponent> m_aVehicleRadios = {};
+	// Server: radios with a speaker (vehicle radios, manpacks whose speaker was turned on), so a transmission
+	// can find the speakers tuned to its frequency
+	ref array<CVON_RadioComponent> m_aSpeakerRadios = {};
+
+	// Server: radios whose handset someone is holding, so the holder's radios can include it
+	ref array<CVON_RadioComponent> m_aHeldHandsets = {};
+
+	//Manpacks (handset, speaker) need a radio backpack as well as a long-range radio; off: any carried long-range radio counts
+	[Attribute("1", desc: "Manpack radios (grab the handset, speaker) need a radio backpack worn as well as a long-range radio")]
+	bool m_bManpackNeedsRadioBackpack;
 
 	// Server, reused by BroadcastToSpeakers: the nearest speaker each player hears a transmission through
 	static const float SPEAKER_SEND_MARGIN = 10; // m past the speaker range, so people walking up hear it (the client fades it in)
 	ref array<int> m_aSpeakerPlayerIds = {};
-	ref map<int, CVON_VehicleRadioComponent> m_mNearestSpeaker = new map<int, CVON_VehicleRadioComponent>();
+	ref map<int, CVON_RadioComponent> m_mNearestSpeaker = new map<int, CVON_RadioComponent>();
 	ref map<int, float> m_mNearestSpeakerDistSq = new map<int, float>();
 
 	//If disabled everyone shares the same frequencies.
 	[Attribute("1")] bool m_bUseFactionEcncryption;
-	
+
 	//If disabled there will be no babbel for other factions
 	[Attribute("0")] bool m_bUseBabbel;
-	
+
 	//Mostly used so i don't lose my fucking MIND testing the mod in dedicated.
 	[Attribute("1")] bool m_bTeamspeakChecks;
-	
+
 	[Attribute()] ref array<ref CVON_SharedFrequencyObject> m_aSharedFrequencies;
-	
+
 	//Wow a pointer, so performant
 	static CVON_VONGameModeComponent m_Instance;
-	
+
 	//Preset Frequency Config resource
 	[Attribute("", UIWidgets.ResourceNamePicker, desc: "", "conf class=CVON_FreqConfig")]
 	ResourceName m_sFreqConfig;
-	
+
 	//The actual Frequency Config Resource loaded OnPostInit
 	ref CVON_FreqConfig m_FreqConfig;
-	
+
 	//When the gamemode is created on the server we need to create a server setting file.
 	//If already created lets populate that data into the gamemode for clients to us.
 	//Delay is necessary
@@ -80,17 +88,17 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		m_Instance = this;
 		if (!System.IsConsoleApp())
 			return;
-		
+
 		GetGame().GetCallqueue().CallLater(InitializeChannelId, 500, false);
 	}
-	
+
 	override void OnPostInit(IEntity owner)
 	{
 		super.OnPostInit(owner);
 		if (m_sFreqConfig != "")
 			m_FreqConfig = CVON_FreqConfig.Cast(BaseContainerTools.CreateInstanceFromContainer(BaseContainerTools.LoadContainer(m_sFreqConfig).GetResource().ToBaseContainer()));
 	}
-	
+
 	override void OnPlayerConnected(int playerId)
 	{
 		super.OnPlayerConnected(playerId);
@@ -99,7 +107,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		m_aPlayerIds.Insert(playerId);
 		Replication.BumpMe();
 	}
-	
+
 	override void OnPlayerDisconnected(int playerId, KickCauseCode cause, int timeout)
 	{
 		super.OnPlayerDisconnected(playerId, cause, timeout);
@@ -110,27 +118,27 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		}
 		if (m_PlayerFreqArray.Contains(playerId))
 			m_PlayerFreqArray.Remove(playerId);
-		
+
 		if (m_PlayerKeyArray.Contains(playerId))
 			m_PlayerKeyArray.Remove(playerId);
-		
+
 		if (!m_aPlayerIds.Contains(playerId))
 			return;
-		
+
 		int index = m_aPlayerIds.Find(playerId);
 		m_aPlayerVolumes.RemoveOrdered(index);
 		m_aPlayerClientIds.RemoveOrdered(index);
 		m_aPlayerIds.RemoveOrdered(index);
 		Replication.BumpMe();
 	}
-	
+
 	void UpdateClientId(int playerId, int clientId)
 	{
 		int index = m_aPlayerIds.Find(playerId);
 		m_aPlayerClientIds.Set(index, clientId);
 		Replication.BumpMe();
 	}
-	
+
 	//Explained above
 	//==========================================================================================================================================================================
 	void InitializeChannelId()
@@ -164,20 +172,20 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 				ServerJSON.WriteValue("TeamspeakServerIP", m_sTeamSpeakServerIP);
 				ServerJSON.WriteValue("TeamspeakServerPassword", m_sTeamSpeakServerPassword);
 				ServerJSON.EndObject();
-			
+
 				ServerJSON.SaveToFile("$profile:/VONServerSettings.json");
 			}
 			Replication.BumpMe();
 		}
 	}
-	
+
 	//mmmm more pointer
 	//==========================================================================================================================================================================
 	static CVON_VONGameModeComponent GetInstance()
 	{
 		return m_Instance;
 	}
-	
+
 	void UpdateVolume(int playerId, int input)
 	{
 		int index = m_aPlayerIds.Find(playerId);
@@ -187,10 +195,10 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 		if (currentVolume == 0 && input == -1)
 			return;
-		
+
 		if (currentVolume == 4 && input == 1)
 			return;
-		
+
 		currentVolume += input;
 		int newVolume = 0;
 		switch(currentVolume)
@@ -204,7 +212,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		m_aPlayerVolumes.Set(index, newVolume);
 		Replication.BumpMe();
 	}
-	
+
 	int GetPlayerVolume(int playerId)
 	{
 		int index = m_aPlayerIds.Find(playerId);
@@ -212,7 +220,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			return SCR_PlayerController.m_aVolumeValues[2]; // default mid volume
 		return m_aPlayerVolumes.Get(index);
 	}
-	
+
 	//I go into more detail in the VONController but this broadcasts to any player in the playerId array
 	//This makes it so only the players that need to get the VONEntry get it, saving on that sweet sweet sweet network.
 	//Broadcasts are only tracked on the clients, server doesn't track it anywhere.
@@ -307,26 +315,25 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			}
 		}
 
-		if (!m_aVehicleRadios.IsEmpty())
+		if (!m_aSpeakerRadios.IsEmpty())
 			BroadcastToSpeakers(VONContainer, playerIdToAdd, radioId, senderOrigin, maxDist, receivers, gamemode.IsEncryptionEnabled());
 	}
 
 	//Vehicle speakers: players near a vehicle whose radio is on the transmission's frequency hear it from
-	//the vehicle, unless they already have it on a radio of their own or are close enough to hear the
-	//sender talk. Each player hears it through their nearest speaker only (one voice per talker).
+	//the vehicle, unless they already have it on a radio of their own. Each player gets their nearest
+	//speaker (one voice per talker); a listener also near the sender hears whichever of the speaker and the
+	//sender's own voice is louder for them (worked out on their client, see SCR_VONController.WriteJSON).
 	//==========================================================================================================================================================================
 	protected void BroadcastToSpeakers(CVON_VONContainer VONContainer, int senderId, RplId transmittingRadio, vector senderOrigin, float maxDist, array<int> receivers, bool encryption)
 	{
 		PlayerManager pm = GetGame().GetPlayerManager();
-		float senderVoiceReach = GetPlayerVolume(senderId);
-		float senderVoiceReachSq = senderVoiceReach * senderVoiceReach;
 
 		m_aSpeakerPlayerIds.Clear();
 		pm.GetPlayers(m_aSpeakerPlayerIds);
 		m_mNearestSpeaker.Clear();
 		m_mNearestSpeakerDistSq.Clear();
 
-		foreach (CVON_VehicleRadioComponent speaker: m_aVehicleRadios)
+		foreach (CVON_RadioComponent speaker: m_aSpeakerRadios)
 		{
 			if (!speaker || !speaker.HasActiveSpeaker())
 				continue;
@@ -341,8 +348,12 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			if (encryption && speaker.m_sFactionKey != VONContainer.m_sFactionKey)
 				continue;
 
+			IEntity speakerEntity = speaker.GetSpeakerEntity();
+			if (!speakerEntity)
+				continue;
+
 			// Out of the transmitting radio's range
-			vector speakerOrigin = speaker.GetOwner().GetOrigin();
+			vector speakerOrigin = speakerEntity.GetOrigin();
 			if (maxDist > 0 && vector.DistanceSq(speakerOrigin, senderOrigin) > maxDist * maxDist)
 				continue;
 
@@ -358,9 +369,6 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 					continue;
 
 				vector origin = player.GetOrigin();
-				if (vector.DistanceSq(origin, senderOrigin) <= senderVoiceReachSq)
-					continue;
-
 				float distSq = vector.DistanceSq(origin, speakerOrigin);
 				if (distSq > reachSq)
 					continue;
@@ -374,7 +382,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			}
 		}
 
-		foreach (int playerId, CVON_VehicleRadioComponent speaker: m_mNearestSpeaker)
+		foreach (int playerId, CVON_RadioComponent speaker: m_mNearestSpeaker)
 		{
 			SCR_PlayerController receiverController = SCR_PlayerController.Cast(pm.GetPlayerController(playerId));
 			if (!receiverController)
@@ -385,15 +393,49 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		}
 	}
 
-	void RegisterVehicleRadio(CVON_VehicleRadioComponent radio)
+	void RegisterSpeakerRadio(CVON_RadioComponent radio)
 	{
-		if (!m_aVehicleRadios.Contains(radio))
-			m_aVehicleRadios.Insert(radio);
+		if (!m_aSpeakerRadios.Contains(radio))
+			m_aSpeakerRadios.Insert(radio);
 	}
 
-	void UnregisterVehicleRadio(CVON_VehicleRadioComponent radio)
+	void UnregisterSpeakerRadio(CVON_RadioComponent radio)
 	{
-		m_aVehicleRadios.RemoveItem(radio);
+		m_aSpeakerRadios.RemoveItem(radio);
+	}
+
+	void SetHandsetHeld(CVON_RadioComponent radio, bool held)
+	{
+		if (!held)
+		{
+			m_aHeldHandsets.RemoveItem(radio);
+			return;
+		}
+		if (!m_aHeldHandsets.Contains(radio))
+			m_aHeldHandsets.Insert(radio);
+	}
+
+	//The radio whose handset this character is holding, or null
+	CVON_RadioComponent GetHeldHandset(IEntity character)
+	{
+		if (!character)
+			return null;
+
+		//Our own character on a client: tracked by the player controller
+		SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerController());
+		if (pc && pc.m_HandsetRadio && character == pc.GetControlledEntity())
+		{
+			CVON_RadioComponent own = CVON_RadioComponent.Cast(pc.m_HandsetRadio.FindComponent(CVON_RadioComponent));
+			if (own && own.IsHandsetHeldBy(character))
+				return own;
+		}
+
+		foreach (CVON_RadioComponent radio: m_aHeldHandsets)
+		{
+			if (radio && radio.IsHandsetHeldBy(character))
+				return radio;
+		}
+		return null;
 	}
 
 	//Server: keeps m_mFrequencyListeners in step with each player's radios ("freq|freq|" strings)
@@ -403,7 +445,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		RemoveFromFrequencyIndex(playerId);
 		m_PlayerFreqArray.Set(playerId, radioFreqs);
 		m_PlayerKeyArray.Set(playerId, factionKeys);
-		
+
 		array<string> freqs = {};
 		radioFreqs.Split("|", freqs, true);
 		foreach (string freq: freqs)
@@ -418,13 +460,13 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 				listeners.Insert(playerId);
 		}
 	}
-	
+
 	void RemoveFromFrequencyIndex(int playerId)
 	{
 		string oldFreqs;
 		if (!m_PlayerFreqArray.Find(playerId, oldFreqs))
 			return;
-		
+
 		array<string> freqs = {};
 		oldFreqs.Split("|", freqs, true);
 		foreach (string freq: freqs)
@@ -437,7 +479,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 				m_mFrequencyListeners.Remove(freq);
 		}
 	}
-	
+
 	array<string> GetFreqsFromFreqMap(int playerId)
 	{
 		string freqs = m_PlayerFreqArray.Get(playerId);
@@ -445,7 +487,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		freqs.Split("|", freq, false);
 		return freq;
 	}
-	
+
 	array<string> GetFactionKeysFromFreqMap(int playerId)
 	{
 		string freqs = m_PlayerKeyArray.Get(playerId);
@@ -453,8 +495,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		freqs.Split("|", factionKeys, false);
 		return factionKeys;
 	}
-	
-	
+
+
 	//Same as above braodcasts only to the player that specifically needs to remove the broadcast
 	//==========================================================================================================================================================================
 	void RemoveLocalVONBroadcasts(int playerIdToRemove)
@@ -463,22 +505,23 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		if (!m_mBroadcastReceivers.Find(playerIdToRemove, receivers) || !receivers)
 			return;
 		m_mBroadcastReceivers.Remove(playerIdToRemove);
-		
+
 		foreach (int playerId: receivers)
 		{
 			if (playerId == playerIdToRemove)
 				continue;
-			
+
 			SCR_PlayerController pc = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
 			if (!pc)
 				continue;
-		
+
 			pc.RemoveLocalVONBroadcast(playerIdToRemove);
 		}
 	}
-	
+
 	//Just an easy way for me to get all the radios on an entity.
-	//includeVehicle: also the vehicle radio they can use (crew seat of a vehicle with one), last
+	//includeVehicle: also the vehicle radio they can use (crew seat of a vehicle with one) and the radio whose
+	//handset they're holding, last
 	//==========================================================================================================================================================================
 	array<RplId> GetRadios(IEntity entity, bool includeVehicle = true)
 	{
@@ -503,6 +546,10 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			CVON_VehicleRadioComponent vehicleRadio = CVON_VehicleComms.GetOperatedRadio(entity);
 			if (vehicleRadio)
 				radios.Insert(vehicleRadio.GetRplId());
+
+			CVON_RadioComponent handset = GetHeldHandset(entity);
+			if (handset)
+				radios.Insert(handset.GetRplId());
 		}
 		return radios;
 	}
@@ -528,40 +575,11 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		CVON_VehicleRadioComponent vehicleRadio = CVON_VehicleComms.GetOperatedRadio(entity);
 		if (vehicleRadio)
 			radios.Insert(vehicleRadio.GetOwner());
+
+		CVON_RadioComponent handset = GetHeldHandset(entity);
+		if (handset)
+			radios.Insert(handset.GetOwner());
 		return radios;
 	}
-	
-	void OpenHandMicServer(int playerId, RplId handMicEntityId)
-	{
-		if (!Replication.FindItem(handMicEntityId))
-			return;
-		
-		IEntity entity = RplComponent.Cast(Replication.FindItem(handMicEntityId)).GetEntity();
-		if (!entity)
-			return;
-		
-		int amountOfRadios = 0;
-		ref array<string> freqs = {};
-		ref array<string> radioNames = {};
-		
-		SCR_GadgetManagerComponent gadgetManager = SCR_GadgetManagerComponent.GetGadgetManager(entity);
-		ref array<SCR_GadgetComponent> gadgets = gadgetManager.GetGadgetsByType(EGadgetType.RADIO);
-		if (!gadgets)
-			return;
-		foreach (SCR_GadgetComponent gadget: gadgets)
-		{
-			if (!gadget.GetOwner().FindComponent(CVON_RadioComponent))
-				continue;
-			
-			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(gadget.GetOwner().FindComponent(CVON_RadioComponent));
-			freqs.Insert(radioComp.m_sFrequency);
-			radioNames.Insert(radioComp.m_sRadioName);
-			amountOfRadios++;
-		}
-		
-		if (amountOfRadios == 0)
-			return;
-		
-		SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).OpenHandMicOwner(freqs, amountOfRadios, radioNames);
-	}
+
 }

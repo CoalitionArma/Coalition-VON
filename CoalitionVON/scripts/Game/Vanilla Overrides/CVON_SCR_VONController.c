@@ -12,56 +12,56 @@ modded class SCR_VONController
 {
 	static const int CVON_DB_ATTEN_VEHICLE  = -18; // speaker inside vehicle
 	static const int CVON_DB_ATTEN_BUILDING = -12; // speaker inside building
-	
+
 	//MMMM POINTER
 	SCR_PlayerController m_PlayerController;
-	
+
 	SCR_BaseGameMode m_BaseGamemode;
-	
+
 	IEntity m_Player;
-	
+
 	RplComponent m_PlayerRplComponent;
-	
+
 	CameraManager m_CameraManager;
-	
+
 	MenuManager m_MenuManager;
-	
+
 	CameraBase m_Camera;
-	
+
 	//MMM... stores the gamemode
 	CVON_VONGameModeComponent m_VONGameModeComponent;
 	PlayerManager m_PlayerManager;
-	
+
 	//Who we are currently broadcasting to, this is how we know who we have to send remove calls to
 	ref array<int> m_aPlayerIdsBroadcastedTo = {};
-	
+
 	//What is our current broadcast
 	ref CVON_VONContainer m_CurrentVONContainer = null;
-	
+
 	//Am I broadcasting
 	bool m_bIsBroadcasting = false;
-	
+
 	//Have I already broadcasted my current von container
 	bool m_bHasBroadcasted = false;
-	
+
 	//Both are used so we can toggle our direct voice and use a radio at the same time
 	bool m_bToggleBuffer = false;
 	bool m_bToggleTurnedOffByRadio = false;
-	
+
 	//Stores the HUD so we can deactivate it after a transmissions end
 	CVON_HUD m_VONHud;
-	
+
 	//Used to check life state for VON
 	SCR_CharacterControllerComponent m_CharacterController;
-	
+
 	//Used if we are warning the player their VON is not connected after initial connection
 	bool m_bShowingSecondWarning = false;
-	
+
 	SCR_FactionManager m_FactionManager;
-	
+
 	bool m_bFirstConnect = false;
-	
-	
+
+
 	//All these below are just how we assign keybinds to activate certain VON Transmissions
 	//==========================================================================================================================================================================
 	void ActivateCVONSR()
@@ -75,7 +75,7 @@ modded class SCR_VONController
 		}
 		ActivateCVON(CVON_EVONTransmitType.SR);
 	}
-	
+
 	//==========================================================================================================================================================================
 	void ActivateCVONLR()
 	{
@@ -88,7 +88,7 @@ modded class SCR_VONController
 		}
 		ActivateCVON(CVON_EVONTransmitType.LR);
 	}
-	
+
 	//==========================================================================================================================================================================
 	void ActivateCVONLR2()
 	{
@@ -101,16 +101,16 @@ modded class SCR_VONController
 		}
 		ActivateCVON(CVON_EVONTransmitType.LR2);
 	}
-	
+
 	//How we rotate what radio is assigned to caps-lock, aka active.
 	//==========================================================================================================================================================================
 	void RotateActiveRadio()
 	{
 		int count = m_PlayerController.m_aRadios.Count();
 		if (count < 2) return;
-	
+
 		IEntity last = m_PlayerController.m_aRadios[count - 1];
-	
+
 	    for (int i = count - 1; i > 0; i--)
 	    {
 	        m_PlayerController.m_aRadios[i] = m_PlayerController.m_aRadios[i - 1];
@@ -119,9 +119,9 @@ modded class SCR_VONController
 		m_PlayerController.m_iAmountOfTimesRadioRotated++;
 		if (m_PlayerController.m_iAmountOfTimesRadioRotated > count)
 			m_PlayerController.m_iAmountOfTimesRadioRotated = 1;
-			
+
 	}
-	
+
 	//! Initialize component, done once per controller
 	//==========================================================================================================================================================================
 	override protected void Init(IEntity owner)
@@ -136,7 +136,7 @@ modded class SCR_VONController
 			Deactivate(owner);
 			return;
 		}
-		
+
 		UpdateUnconsciousVONPermitted();
 
 		m_InputManager = GetGame().GetInputManager();
@@ -169,36 +169,36 @@ modded class SCR_VONController
 
 		PauseMenuUI.m_OnPauseMenuOpened.Insert(OnPauseMenuOpened);
 		PauseMenuUI.m_OnPauseMenuClosed.Insert(OnPauseMenuClosed);
-		
+
 		SCR_BaseGameMode gameMode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
 		if (gameMode)
 			gameMode.GetOnPlayerDeleted().Insert(OnPlayerDeleted);
-		
+
 		m_DirectSpeechEntry = new SCR_VONEntry(); // Init direct speech entry
-		
+
 		ConnectToHandleUpdateVONControllersSystem();
-		
+
 		s_bIsInit = true;
-		
+
 		if (m_VONMenu)
 			m_VONMenu.Init(this);
-		
+
 		m_FactionManager = SCR_FactionManager.Cast(GetGame().GetFactionManager());
-		
+
 		UpdateSystemState();
-		
+
 		GetGame().GetCallqueue().CallLater(GetHud, 500, false);
-		
-		
+
+
 	}
-	
+
 	//Change ear keybind
 	//==========================================================================================================================================================================
 	void SetActiveEarRight()
 	{
 		if (m_PlayerController.m_aRadios.Count() == 0)
 			return;
-		
+
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
 		if (!radioComp)
 			return;
@@ -206,14 +206,14 @@ modded class SCR_VONController
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
 	}
-	
+
 	//Change ear keybind
 	//==========================================================================================================================================================================
 	void SetActiveEarLeft()
 	{
 		if (m_PlayerController.m_aRadios.Count() == 0)
 			return;
-		
+
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
 		if (!radioComp)
 			return;
@@ -221,14 +221,14 @@ modded class SCR_VONController
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
 	}
-	
+
 	//Change ear keybind
 	//==========================================================================================================================================================================
 	void SetActiveEarBoth()
 	{
 		if (m_PlayerController.m_aRadios.Count() == 0)
 			return;
-		
+
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
 		if (!radioComp)
 			return;
@@ -236,24 +236,31 @@ modded class SCR_VONController
 		radioComp.WriteJSON(m_Player);
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
 	}
-	
-	//Keybind: crew turn their vehicle radio's speaker on or off
+
+	//Keybind: turn a radio speaker on or off. In a vehicle crew seat, the vehicle radio's; otherwise our own
+	//manpack's, so everyone around us hears the net.
 	//==========================================================================================================================================================================
 	void ToggleVehicleSpeaker()
 	{
 		if (!m_Player || !m_PlayerController)
 			return;
 
-		CVON_VehicleRadioComponent radio = CVON_VehicleComms.GetOperatedRadio(m_Player);
-		if (!radio || !radio.HasSpeaker())
+		CVON_RadioComponent radio = CVON_VehicleComms.GetOperatedRadio(m_Player);
+		if (!radio || !radio.CanUseSpeaker())
+			radio = CVON_Manpack.GetManpackRadio(m_Player);
+		if (!radio || !radio.CanUseSpeaker())
 			return;
 
 		m_PlayerController.ToggleVehicleSpeaker(radio.GetRplId());
-		// m_bSpeakerOn is still the old value until the server's change replicates
-		if (radio.m_bSpeakerOn)
-			SCR_HintManagerComponent.ShowCustomHint("Vehicle radio speaker off", "Coalition VON", 2);
+
+		string radioName = radio.m_sRadioName;
+		if (CVON_VehicleRadioComponent.Cast(radio))
+			radioName = "Vehicle radio";
+		// IsSpeakerOn() still has the old value until the server's change replicates
+		if (radio.IsSpeakerOn())
+			SCR_HintManagerComponent.ShowCustomHint(radioName + " speaker off", "Coalition VON", 2);
 		else
-			SCR_HintManagerComponent.ShowCustomHint("Vehicle radio speaker on", "Coalition VON", 2);
+			SCR_HintManagerComponent.ShowCustomHint(radioName + " speaker on", "Coalition VON", 2);
 	}
 
 	//Keybind: crew load their encryption key and channels into the vehicle radio. Until someone does, it
@@ -263,52 +270,52 @@ modded class SCR_VONController
 	{
 		if (!m_Player || !m_PlayerController)
 			return;
-		
+
 		CVON_VehicleRadioComponent radio = CVON_VehicleComms.GetOperatedRadio(m_Player);
 		if (!radio)
 			return;
-		
+
 		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(m_Player.FindComponent(FactionAffiliationComponent));
 		if (!factionComp || factionComp.GetAffiliatedFactionKey() == "")
 			return;
-		
+
 		if (radio.SharesKey(factionComp.GetAffiliatedFactionKey()))
 		{
 			SCR_HintManagerComponent.ShowCustomHint("Vehicle radio is already on your encryption", "Coalition VON", 2);
 			return;
 		}
-		
+
 		m_PlayerController.KeyFillVehicleRadio(radio.GetRplId());
 		SCR_HintManagerComponent.ShowCustomHint("Vehicle radio filled with your encryption and channels", "Coalition VON", 3);
 	}
-	
+
 	//Keybind to open active radio
 	//==========================================================================================================================================================================
 	void OpenActiveRadio()
 	{
 		if (m_PlayerController.m_aRadios.Count() == 0)
 			return;
-		
+
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
 		if (!radioComp)
 			return;
 		radioComp.OpenMenu();
 	}
-	
+
 	//Used as input
 	//==========================================================================================================================================================================
 	void ChannelUp()
 	{
 		ChangeChannel(1);
 	}
-	
+
 	//used as input
 	//==========================================================================================================================================================================
 	void ChannelDown()
 	{
 		ChangeChannel(-1);
 	}
-	
+
 	//Used for changing channel keybind to rotate through channels without opening radio
 	//==========================================================================================================================================================================
 	void ChangeChannel(int input)
@@ -359,7 +366,7 @@ modded class SCR_VONController
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1 + input);
 		#endif
 	}
-	
+
 	//Fetches the VON HUD, delay is necessary.
 	//==========================================================================================================================================================================
 	void GetHud()
@@ -370,11 +377,11 @@ modded class SCR_VONController
 		{
 			if (!CVON_HUD.Cast(display))
 				continue;
-			
+
 			m_VONHud = CVON_HUD.Cast(display);
 		}
 	}
-	
+
 	//No more base game VON
 	//==========================================================================================================================================================================
 	override protected bool ActivateVON(notnull SCR_VONEntry entry, EVONTransmitType transmitType = EVONTransmitType.NONE)
@@ -385,7 +392,7 @@ modded class SCR_VONController
 		}
 		return false;
 	}
-	
+
 	//This builds our VON Container with all the data we need to send to other clients based on the data sent out. This starts the talking process.
 	//==========================================================================================================================================================================
 	void ActivateCVON(CVON_EVONTransmitType transmitType = CVON_EVONTransmitType.NONE)
@@ -408,12 +415,12 @@ modded class SCR_VONController
 			container.m_eVonType = CVON_EVONType.DIRECT;
 		else if (transmitType == CVON_EVONTransmitType.SR || transmitType == CVON_EVONTransmitType.LR || transmitType == CVON_EVONTransmitType.LR2)
 			container.m_eVonType = CVON_EVONType.RADIO;
-		
+
 		container.m_iVolume = m_PlayerController.ReturnLocalVoiceVolume();
 		container.m_SenderRplId = RplComponent.Cast(m_Player.FindComponent(RplComponent)).Id();
 		container.m_iClientId = m_PlayerController.GetTeamspeakClientId();
 		container.m_iPlayerId = m_PlayerController.GetLocalPlayerId();
-		
+
 		if (container.m_eVonType == CVON_EVONType.RADIO)
 		{
 			switch (transmitType)
@@ -429,10 +436,10 @@ modded class SCR_VONController
 						m_PlayerController.InitializeRadios(m_PlayerController.GetControlledEntity());
 						return;
 					}
-					
+
 					if (!radio)
 						return;
-					
+
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
 						return;
@@ -455,7 +462,7 @@ modded class SCR_VONController
 					IEntity radio = m_PlayerController.m_aRadios.Get(1);
 					if (radio == null)
 						return;
-					
+
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
 						return;
@@ -478,7 +485,7 @@ modded class SCR_VONController
 					IEntity radio = m_PlayerController.m_aRadios.Get(2);
 					if (radio == null)
 						return;
-					
+
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
 						return;
@@ -500,7 +507,7 @@ modded class SCR_VONController
 		m_bIsBroadcasting = true;
 		m_bHasBroadcasted = false;
 	}
-	
+
 	//No more base game VON
 	//==========================================================================================================================================================================
 	override protected void DeactivateVON(EVONTransmitType transmitType = EVONTransmitType.NONE)
@@ -512,7 +519,7 @@ modded class SCR_VONController
 		}
 		return;
 	}
-	
+
 	//Stops talking and removes our VON entry from all others players that we where broadcasting to.
 	//==========================================================================================================================================================================
 	void DeactivateCVON()
@@ -543,7 +550,7 @@ modded class SCR_VONController
 					}
 				}
 			}
-			
+
 			m_VONHud.HideVON();
 		}
 		else
@@ -558,7 +565,7 @@ modded class SCR_VONController
 		if (wasRadio)
 			m_PlayerController.BroadcastRemoveLocalVONToServer(m_PlayerController.GetPlayerId());
 	}
-	
+
 	//==========================================================================================================================================================================
 	override void OnPostInit(IEntity owner)
 	{
@@ -569,20 +576,20 @@ modded class SCR_VONController
 			return;
 		SetEventMask(owner, EntityEvent.FIXEDFRAME | EntityEvent.INIT);
 	}
-	
+
 	override void EOnInit(IEntity owner)
 	{
 		super.EOnInit(owner);
-		
+
 		if (!m_VONGameModeComponent)
 			m_VONGameModeComponent = CVON_VONGameModeComponent.GetInstance();
-		
+
 		if (!m_PlayerManager)
 			m_PlayerManager = GetGame().GetPlayerManager();
-		
+
 		if (!m_CameraManager)
 			m_CameraManager = GetGame().GetCameraManager();
-		
+
 		if (!m_MenuManager)
 			m_MenuManager = GetGame().GetMenuManager();
 	}
@@ -998,7 +1005,7 @@ modded class SCR_VONController
 	{
 		return !m_bPluginReportsTalking || m_TalkingClientIds.Contains(clientId);
 	}
-	
+
 	//Voice levels: how loud a talker is in each ear, from distance, their voice range setting, walls and
 	//direction. The values to tune by ear are grouped here.
 	//==========================================================================================================================================================================
@@ -1156,14 +1163,14 @@ modded class SCR_VONController
 		float behindRaw = Math.Clamp((-front - 0.15) / 0.85, 0.0, 1.0);
 		outBehindIntensity = behindRaw * behindRaw * (3.0 - 2.0 * behindRaw);
 	}
-	
+
 	// Convert attenuation in dB → linear (treats +/−dB the same)
 	static float AttenDbToLin(float dB)
 	{
 	    float a = Math.AbsFloat(dB);
 	    return Math.Pow(10.0, -a / 20.0);
 	}
-	
+
 	//Also bless ChatGPT, handles the arcade signal calulations.
 	// distance: current distance from transmitter
 	// maxDist: effective range
@@ -1173,10 +1180,10 @@ modded class SCR_VONController
 	{
 	    if (d <= 0)                return 1.0;
 	    if (d >= maxRangeMeters)   return 0.0;
-	
+
 	    float x = d / maxRangeMeters; // 0..1
 	    float res;
-	
+
 	    if (x <= 0.2) {
 	        float t = x / 0.2;                // 0..1 over [0.0, 0.2]
 	        res = 1.0 + t * (0.9 - 1.0);      // 1.0 -> 0.9
@@ -1197,14 +1204,14 @@ modded class SCR_VONController
 	        float t = (x - 0.8) / 0.2;        // 0..1 over (0.8, 1.0]
 	        res = 0.3 + t * (0.0 - 0.3);      // 0.3 -> 0.0
 	    }
-	
+
 	    // clamp to [0,1]
 	    if (res < 0.0) res = 0.0;
 	    if (res > 1.0) res = 1.0;
 	    return res;
 	}
-	
-		
+
+
 	ref map<IEntity, vector> m_HeadCache = new map<IEntity, vector>;
 	void UpdateHeadCache()
 	{
@@ -1349,15 +1356,15 @@ modded class SCR_VONController
 			m_fListenerBottom = bottom;
 		}
 	}
-	
+
 	bool CheckIfInSameVehicle(IEntity senderEntity, IEntity player)
 	{
 		if (!player.GetRootParent())
 			return false;
-		
+
 		if (!Vehicle.Cast(player.GetRootParent()))
 			return false;
-		
+
 		SCR_BaseCompartmentManagerComponent compMan = Vehicle.Cast(player.GetRootParent()).m_CompartmentMan;
 		array<BaseCompartmentSlot> compartments = {};
 		compMan.GetCompartments(compartments);
@@ -1365,13 +1372,13 @@ modded class SCR_VONController
 		{
 			if (!compartment.IsOccupied())
 				continue;
-			
+
 			if (compartment.GetOccupant() == senderEntity)
 				return true;
 		}
 		return false;
 	}
-	
+
 	bool ShouldMuffleAudio(IEntity senderEntity, int playerId = 0, out int loweredDecibles = 0)
 	{
 		IEntity player = m_PlayerController.GetLocalControlledEntity();
@@ -1413,10 +1420,45 @@ modded class SCR_VONController
 		}
 		return false;
 	}
-	
-	//A transmission heard through a vehicle speaker: positioned at the vehicle, fading out over the
-	//speaker's range. Muffled when we're inside something else (a building, another vehicle); not when
-	//we're in that vehicle.
+
+	//A talker's own voice: position, distance, voice range tier and muffling. False when they're out of
+	//range or not streamed in (gains stay 0).
+	//==========================================================================================================================================================================
+	bool ComputeDirectLR(CVON_VONContainer container, int playerId, bool talking, out float left, out float right, out float behindIntensity, out int loweredDecibels)
+	{
+		left = 0;
+		right = 0;
+		behindIntensity = 0;
+		loweredDecibels = 0;
+
+		if (!container.m_SoundSource && container.m_fDistanceToSender != -1 && Replication.FindItem(container.m_SenderRplId))
+			container.m_SoundSource = RplComponent.Cast(Replication.FindItem(container.m_SenderRplId)).GetEntity();
+
+		if (!container.m_SoundSource || container.m_fDistanceToSender == -1)
+			return false;
+
+		if (m_fTime >= container.m_fNextOcclusionTime)
+		{
+			int lowered = 0;
+			ShouldMuffleAudio(container.m_SoundSource, playerId, lowered);
+			container.m_iLoweredDecibles = lowered;
+			float occlusionInterval = OCCLUSION_SILENT_INTERVAL;
+			if (talking)
+				occlusionInterval = OCCLUSION_TALKING_INTERVAL;
+			// Spread senders across ticks so their traces don't all land on one frame
+			int stagger = playerId % 5; // integer first: Enforce has no float '%'
+			container.m_fNextOcclusionTime = m_fTime + occlusionInterval + stagger * 0.02;
+		}
+		loweredDecibels = container.m_iLoweredDecibles;
+
+		float levelDb = VoiceTierDb(container.m_iVolume) + OcclusionDb(loweredDecibels);
+		ComputeStereoLR(m_Camera, GetHeadHeight(m_Player), GetHeadHeight(container.m_SoundSource), container.m_iVolume, levelDb, behindIntensity, left, right);
+		return true;
+	}
+
+	//A transmission heard through a radio speaker (a vehicle's, or a manpack's): positioned at the speaker,
+	//fading out over its range. Muffled when we're inside something else (a building, another vehicle); not
+	//when we're in that vehicle or carrying that radio.
 	//==========================================================================================================================================================================
 	void ComputeSpeakerLR(CVON_VONContainer container, bool talking, out float left, out float right, out float behindIntensity, out int loweredDecibels)
 	{
@@ -1433,12 +1475,18 @@ modded class SCR_VONController
 			if (!container.m_SpeakerEntity)
 				return;
 		}
-		IEntity vehicle = container.m_SpeakerEntity;
+		CVON_RadioComponent speakerRadio = CVON_RadioComponent.Cast(container.m_SpeakerEntity.FindComponent(CVON_RadioComponent));
+		if (!speakerRadio)
+			return;
+		IEntity speakerSource = speakerRadio.GetSpeakerEntity();
+		if (!speakerSource)
+			return;
 
-		if (m_fTime >= container.m_fNextOcclusionTime)
+		//Its own muffling state: the sender's direct voice may be worked out for the same entry
+		if (m_fTime >= container.m_fNextSpeakerOcclusionTime)
 		{
 			int lowered = 0;
-			if (m_Player.GetRootParent() != vehicle)
+			if (m_Player != speakerSource && m_Player.GetRootParent() != speakerSource)
 			{
 				UpdateListenerOcclusion(m_Player);
 				if (m_bListenerInVehicle)
@@ -1446,16 +1494,15 @@ modded class SCR_VONController
 				else if (m_bListenerInBuilding)
 					lowered = CVON_DB_ATTEN_BUILDING;
 			}
-			container.m_iLoweredDecibles = lowered;
+			container.m_iSpeakerLoweredDecibels = lowered;
 			float occlusionInterval = OCCLUSION_SILENT_INTERVAL;
 			if (talking)
 				occlusionInterval = OCCLUSION_TALKING_INTERVAL;
-			container.m_fNextOcclusionTime = m_fTime + occlusionInterval;
+			container.m_fNextSpeakerOcclusionTime = m_fTime + occlusionInterval;
 		}
-		loweredDecibels = container.m_iLoweredDecibles;
+		loweredDecibels = container.m_iSpeakerLoweredDecibels;
 
-		vector speakerOffset = "0 1.5 0";
-		vector speakerPos = vehicle.CoordToParent(speakerOffset);
+		vector speakerPos = speakerRadio.GetSpeakerPosition();
 		float levelDb = SPEAKER_LEVEL_DB + OcclusionDb(loweredDecibels);
 		ComputeStereoLR(m_Camera, GetHeadHeight(m_Player), speakerPos, container.m_iSpeakerRange, levelDb, behindIntensity, left, right);
 	}
@@ -1464,7 +1511,7 @@ modded class SCR_VONController
 	{
 		//Fill in your spectator logic here
 	}
-	
+
 	bool IsSameLanguage(int localPlayerId, int transmissionPlayerId)
 	{
 		bool sameLanguage = true;
@@ -1484,7 +1531,7 @@ modded class SCR_VONController
 		return sameLanguage;
 	}
 
-	
+
 	//VONServerData.JSON
 	//InGame, this is how teamspeak knows you are in game and need to be moved to the VON Channel.
 	//This JSON handles everything we get from the server and teamspeak, so our TSCLientID we use to send to other clients so they know its us talking in TS.
@@ -1500,7 +1547,7 @@ modded class SCR_VONController
 	//Distance, teamspeak uses this and volume to build a sound fall off curve and adjust the voice coming in.
 	//ConnectionQuality, this handles how well your signal is to another radio, the lower the value the more distorted and quiet your voice is, as well as increasing the noise.
 	//FactionKey, this always gets set but it just determines if encryption is enabled that we can hear the radio broadcast coming in.
-	
+
 	//Chain from broadcast is
 	//You broadcast to selected players -> They receive it in their player controller and add it locally -> 
 	//This WriteJson() method is being constantly called it will then write the data to the json for teamspeak to interpret ->
@@ -1552,7 +1599,7 @@ modded class SCR_VONController
 					m_fWriteTeamspeakClientIdCooldown = 1;
 					m_PlayerController.SetTeamspeakClientId(TSClientId);
 				}
-				
+
 				VONLoad.EndObject();
 				if (gameName == "" || ChannelName != m_VONGameModeComponent.m_sTeamSpeakChannelName || ChannelPassword != m_VONGameModeComponent.m_sTeamSpeakChannelPassword || m_PlayerController.m_sTeamspeakPluginVersion != m_VONGameModeComponent.m_sTeamspeakPluginVersion || InGame != true)
 				{
@@ -1584,7 +1631,7 @@ modded class SCR_VONController
 				else if (!m_MenuManager.GetTopMenu().IsInherited(CVON_WarningMenu) && !m_MenuManager.GetTopMenu().IsInherited(PauseMenuUI))
 					m_MenuManager.OpenMenu(ChimeraMenuPreset.CVON_WarningMenu);
 			}
-				
+
 		}
 		#endif
 		// The camera gives listening direction, the character's head the listening position
@@ -1649,31 +1696,23 @@ modded class SCR_VONController
 			else if (container.m_eVonType == CVON_EVONType.SPEAKER)
 			{
 				ComputeSpeakerLR(container, talking, left, right, behindIntensity, loweredDecibels);
+
+				//The sender may also be close enough to hear directly. One voice per talker, so whichever is
+				//louder here wins: next to the vehicle the speaker, next to the sender their own voice.
+				float directLeft, directRight, directBehind;
+				int directLowered;
+				if (ComputeDirectLR(container, playerId, talking, directLeft, directRight, directBehind, directLowered) && directLeft + directRight > left + right)
+				{
+					outType = CVON_EVONType.DIRECT;
+					left = directLeft;
+					right = directRight;
+					behindIntensity = directBehind;
+					loweredDecibels = directLowered;
+				}
 			}
 			else
 			{
-				if (!container.m_SoundSource && container.m_fDistanceToSender != -1 && Replication.FindItem(container.m_SenderRplId))
-					container.m_SoundSource = RplComponent.Cast(Replication.FindItem(container.m_SenderRplId)).GetEntity();
-
-				if (container.m_SoundSource && container.m_fDistanceToSender != -1)
-				{
-					if (m_fTime >= container.m_fNextOcclusionTime)
-					{
-						int lowered = 0;
-						ShouldMuffleAudio(container.m_SoundSource, playerId, lowered);
-						container.m_iLoweredDecibles = lowered;
-						float occlusionInterval = OCCLUSION_SILENT_INTERVAL;
-						if (talking)
-							occlusionInterval = OCCLUSION_TALKING_INTERVAL;
-						// Spread senders across ticks so their traces don't all land on one frame
-						int stagger = playerId % 5; // integer first: Enforce has no float '%'
-						container.m_fNextOcclusionTime = m_fTime + occlusionInterval + stagger * 0.02;
-					}
-					loweredDecibels = container.m_iLoweredDecibles;
-
-					float levelDb = VoiceTierDb(container.m_iVolume) + OcclusionDb(loweredDecibels);
-					ComputeStereoLR(m_Camera, GetHeadHeight(m_Player), GetHeadHeight(container.m_SoundSource), container.m_iVolume, levelDb, behindIntensity, left, right);
-				}
+				ComputeDirectLR(container, playerId, talking, left, right, behindIntensity, loweredDecibels);
 			}
 
 			if (container.m_eVonType == CVON_EVONType.RADIO)
@@ -1841,7 +1880,7 @@ modded class SCR_VONController
 		file.Write(m_iBinarySeq, 4); // trailer: must match the header for the plugin to accept the file
 		file.Close();
 	}
-	
+
 	//See HEARTBEAT_FILE. The plugin only looks at when the file was last written; the timestamp inside is for debugging.
 	//==========================================================================================================================================================================
 	void WriteHeartbeat()
@@ -1872,7 +1911,7 @@ modded class SCR_VONController
 			}
 			m_aPlayerIdsBroadcastedTo.Clear();
 		}
-		
+
 		SCR_JsonSaveContext VONServerData = new SCR_JsonSaveContext();
 		VONServerData.StartObject("ServerData");
 		VONServerData.WriteValue("InGame", false);

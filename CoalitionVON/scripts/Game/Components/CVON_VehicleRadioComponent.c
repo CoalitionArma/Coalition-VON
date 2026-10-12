@@ -28,18 +28,12 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 	[Attribute("1", desc: "The radio plays out loud so people near the vehicle hear it")]
 	bool m_bHasSpeaker;
 
-	[Attribute("25", desc: "Metres from the vehicle at which the speaker fades out")]
-	int m_iSpeakerRange;
-	
 	[Attribute("0", desc: "Comms only when the vehicle's default faction is military. For base prefabs shared with civilian vehicles (cars, trucks).")]
 	bool m_bMilitaryOnly;
-	
+
 	//Military check result: -1 not worked out yet, 0 civilian, 1 military. Comes from prefab data (the
 	//default faction), so every machine reaches the same answer.
 	protected int m_iMilitaryState = -1;
-
-	[RplProp()]
-	bool m_bSpeakerOn = true;
 
 	//The vehicle is the radio's carrier: its faction, and no player to update settings for
 	//==========================================================================================================================================================================
@@ -64,13 +58,13 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 	{
 		if (!m_bMilitaryOnly)
 			return true;
-		
+
 		if (m_iMilitaryState < 0)
 		{
 			//Factions not loaded yet: decide later rather than caching "civilian"
 			if (!GetGame().GetFactionManager())
 				return false;
-			
+
 			m_iMilitaryState = 0;
 			FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(GetOwner().FindComponent(FactionAffiliationComponent));
 			if (factionComp)
@@ -82,25 +76,42 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		}
 		return m_iMilitaryState == 1;
 	}
-	
+
 	bool HasRadio()
 	{
 		return m_bHasRadio && IsEquipped();
 	}
-	
+
 	bool HasIntercom()
 	{
 		return m_bHasIntercom && IsEquipped();
 	}
-	
+
 	bool HasSpeaker()
 	{
 		return m_bHasSpeaker && HasRadio();
 	}
-	
-	bool HasActiveSpeaker()
+
+	//Speaker: on from the start, comes from the vehicle (m_iSpeakerRange is set on the base prefabs)
+	override bool SpeakerOnByDefault()
 	{
-		return HasSpeaker() && m_bSpeakerOn && m_bPower;
+		return true;
+	}
+
+	override bool CanUseSpeaker()
+	{
+		return HasSpeaker();
+	}
+
+	override IEntity GetSpeakerEntity()
+	{
+		return GetOwner();
+	}
+
+	override vector GetSpeakerPosition()
+	{
+		vector offset = "0 1.5 0";
+		return GetOwner().CoordToParent(offset);
 	}
 
 	//==========================================================================================================================================================================
@@ -124,7 +135,7 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		if (!gamemode || !HasRadio())
 			return;
 
-		gamemode.RegisterVehicleRadio(this);
+		gamemode.RegisterSpeakerRadio(this);
 		InitializeRadios();
 	}
 
@@ -225,20 +236,6 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		return firstRadio;
 	}
 
-	//==========================================================================================================================================================================
-	void ToggleSpeakerServer()
-	{
-		m_bSpeakerOn = !m_bSpeakerOn;
-		Replication.BumpMe();
-	}
-
-	//==========================================================================================================================================================================
-	void ~CVON_VehicleRadioComponent()
-	{
-		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
-		if (gamemode)
-			gamemode.UnregisterVehicleRadio(this);
-	}
 }
 
 //Who is sitting where, for the vehicle radio and intercom

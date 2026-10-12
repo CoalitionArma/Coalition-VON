@@ -62,6 +62,9 @@ class CVON_VONContainer
 	RplId m_SpeakerRplId = RplId.Invalid();
 	int m_iSpeakerRange;
 	IEntity m_SpeakerEntity;
+	// The speaker's own muffling (the sender's direct voice may be worked out for the same entry)
+	float m_fNextSpeakerOcclusionTime = 0;
+	int m_iSpeakerLoweredDecibels;
 
 	// Last values written to VONData.json.
 	// WriteJSON compares current computed values against these to skip
