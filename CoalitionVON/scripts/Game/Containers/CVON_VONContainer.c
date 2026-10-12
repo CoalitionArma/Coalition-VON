@@ -55,6 +55,14 @@ class CVON_VONContainer
 	//Is there any muffling
 	int m_iLoweredDecibles;
 
+	// Vehicle comms, worked out by the listener (not replicated)
+	// The talker is on the same vehicle intercom as us: written as INTERCOM whatever m_eVonType is
+	bool m_bOnIntercom = false;
+	// SPEAKER: the vehicle whose speaker plays this transmission, and how far it carries
+	RplId m_SpeakerRplId = RplId.Invalid();
+	int m_iSpeakerRange;
+	IEntity m_SpeakerEntity;
+
 	// Last values written to VONData.json.
 	// WriteJSON compares current computed values against these to skip
 	// disk writes on frames where nothing has actually changed.
@@ -65,6 +73,12 @@ class CVON_VONContainer
 	float m_fCachedConnQ 	= -999;
 	bool  m_bCachedSameLang = true;
 	string m_sCachedFreq    = "__unset__";
+	int   m_iCachedClientId = 0;
+	int   m_iCachedType     = -1; // VONType as written: m_eVonType, or INTERCOM
+
+	// Update scheduling (see SCR_VONController): when this sender's muffling traces are next due.
+	// Occlusion changes slowly, so it runs a few times a second rather than every frame.
+	float m_fNextOcclusionTime = 0;
 
 	static bool Extract(CVON_VONContainer instance, ScriptCtx ctx, SSnapSerializerBase snapshot)
 	{	

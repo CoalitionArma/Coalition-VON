@@ -38,33 +38,13 @@ modded class SCR_PlayerController
 	void ToggleHeadsetLoweredState()
 	{
 		m_bIsHeadsetLowered = !m_bIsHeadsetLowered;
-		
-		//Grab the first radio to use its radio component
-		//Really regretting how I made this
-		IEntity radio;
+
 		IEntity player = GetControlledEntity();
 		if (!player)
 			return;
-		SCR_InventoryStorageManagerComponent inventoryComp = SCR_InventoryStorageManagerComponent.Cast(player.FindComponent(SCR_InventoryStorageManagerComponent));
-		ref array<IEntity> items = {};
-		inventoryComp.GetItems(items);
-		foreach (IEntity item: items)
-		{
-			if (!item.FindComponent(CVON_RadioComponent))
-				continue;
-			
-			radio = item;
-			break;
-		}
-		
-		if (!radio)
-			return;
-		
-		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
-		if (!radioComp)
-			return;
 
-		radioComp.WriteJSON(player);
+		//Rewrites RadioData.json with no radios while lowered (vehicle radio included)
+		CVON_RadioComponent.WriteRadioData(player);
 	}
 	
 	bool GetHeadsetLoweredState()
@@ -122,6 +102,9 @@ modded class SCR_PlayerController
 			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 			if (!radioComp)
 				continue;
+			//Settings restore inventory radios on respawn; a vehicle radio stays with the vehicle
+			if (CVON_VehicleRadioComponent.Cast(radioComp))
+				continue;
 			SCR_FactionManager factionMan = SCR_FactionManager.Cast(GetGame().GetFactionManager());
 			if (radioComp.m_sFactionKey != "" && radioComp.m_sFactionKey != factionMan.GetPlayerFaction(GetPlayerId()).GetFactionKey())
 				continue;
@@ -138,6 +121,84 @@ modded class SCR_PlayerController
 	//Loading settings only works if the radios where pe configured with the CVON_FreqConfig.
 	void InitializeRadios(IEntity to)
 	{
+		InitializeInventoryRadios(to);
+		//Our own controller only. The server keeps vehicle radios out of its copy of the list: group
+		//changes retune every radio in it, and a vehicle radio isn't any one player's.
+		if (this == GetGame().GetPlayerController())
+			AttachVehicleRadio(to);
+	}
+
+	//The vehicle radio we can use while in a crew seat, kept at the end of m_aRadios so the inventory
+	//radios keep their keys (and their indices match the server's list)
+	IEntity m_VehicleRadio;
+
+	//Local: adds or removes the vehicle radio after getting in, out or changing seats
+	//==========================================================================================================================================================================
+	void AttachVehicleRadio(IEntity character)
+	{
+		CVON_VehicleRadioComponent radio = CVON_VehicleComms.GetOperatedRadio(character);
+		IEntity radioEntity = null;
+		if (radio)
+			radioEntity = radio.GetOwner();
+
+		if (m_VehicleRadio && m_VehicleRadio != radioEntity)
+			m_aRadios.RemoveItemOrdered(m_VehicleRadio);
+		if (radioEntity && !m_aRadios.Contains(radioEntity))
+			m_aRadios.Insert(radioEntity);
+		m_VehicleRadio = radioEntity;
+
+		//A vehicle that had no faction when it spawned gets our key and channels
+		if (radio && radio.m_sFactionKey == "")
+			Rpc(RpcAsk_InitializeVehicleRadio, radio.GetRplId());
+
+		//RadioData.json and the server's frequency index follow the new radio list
+		if (character)
+			CVON_RadioComponent.WriteRadioData(character);
+	}
+
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	void RpcAsk_InitializeVehicleRadio(RplId radioId)
+	{
+		CVON_VehicleRadioComponent radio = CVON_VehicleRadioComponent.Cast(FindRadioComponent(radioId));
+		if (!radio)
+			return;
+
+		IEntity player = GetControlledEntity();
+		if (CVON_VehicleComms.GetOperatedRadio(player) != radio)
+			return;
+		radio.InitializeForCrew(player);
+	}
+
+	//Only the crew can turn the speaker on or off
+	//==========================================================================================================================================================================
+	void ToggleVehicleSpeaker(RplId radioId)
+	{
+		Rpc(RpcAsk_ToggleVehicleSpeaker, radioId);
+	}
+
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	void RpcAsk_ToggleVehicleSpeaker(RplId radioId)
+	{
+		CVON_VehicleRadioComponent radio = CVON_VehicleRadioComponent.Cast(FindRadioComponent(radioId));
+		if (!radio)
+			return;
+
+		if (CVON_VehicleComms.GetOperatedRadio(GetControlledEntity()) != radio)
+			return;
+		radio.ToggleSpeakerServer();
+	}
+
+	protected CVON_RadioComponent FindRadioComponent(RplId radioId)
+	{
+		RplComponent rplComp = RplComponent.Cast(Replication.FindItem(radioId));
+		if (!rplComp || !rplComp.GetEntity())
+			return null;
+		return CVON_RadioComponent.Cast(rplComp.GetEntity().FindComponent(CVON_RadioComponent));
+	}
+
+	//==========================================================================================================================================================================
+	protected void InitializeInventoryRadios(IEntity to)
+	{
 		if (!CVON_VONGameModeComponent.GetInstance())
 			return;
 		
@@ -149,7 +210,7 @@ modded class SCR_PlayerController
 		m_aRadios.Clear();
 		//Reforger Lobby bs
 		m_aLocalEntries.Clear();
-		array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(to);
+		array<RplId> radios = CVON_VONGameModeComponent.GetInstance().GetRadios(to, false);
 		if (!radios)
 			return;
 		if (radios.Count() == 0)
@@ -320,6 +381,40 @@ modded class SCR_PlayerController
 		VONContainer.m_iMaxDistance = maxDistance;
 		VONContainer.m_vSenderLocation = senderOrigin;
 		m_aLocalEntries.Insert(playerId, VONContainer);
+	}
+
+	//A radio transmission we hear through a nearby vehicle's speaker (see BroadcastToSpeakers)
+	//==========================================================================================================================================================================
+	void AddLocalSpeakerBroadcast(CVON_VONContainer VONContainer, int playerId, vector senderOrigin, float maxDistance, RplId speakerId, int speakerRange)
+	{
+		Rpc(RpcAsk_AddLocalSpeakerBroadcast, VONContainer, playerId, senderOrigin, maxDistance, speakerId, speakerRange);
+	}
+
+	//==========================================================================================================================================================================
+	[RplRpc(RplChannel.Reliable, RplRcver.Owner)]
+	void RpcAsk_AddLocalSpeakerBroadcast(CVON_VONContainer VONContainer, int playerId, vector senderOrigin, float maxDistance, RplId speakerId, int speakerRange)
+	{
+		CVON_VONContainer container = m_aLocalEntries.Get(playerId);
+		if (!container)
+		{
+			container = VONContainer;
+			m_aLocalEntries.Insert(playerId, container);
+		}
+		else if (container.m_eVonType == CVON_EVONType.RADIO)
+		{
+			return; // already heard on a radio of our own
+		}
+
+		container.m_eVonType = CVON_EVONType.SPEAKER;
+		container.m_sFrequency = VONContainer.m_sFrequency;
+		container.m_iRadioId = VONContainer.m_iRadioId;
+		container.m_sFactionKey = VONContainer.m_sFactionKey;
+		container.m_iMaxDistance = maxDistance;
+		container.m_vSenderLocation = senderOrigin;
+		container.m_SpeakerRplId = speakerId;
+		container.m_iSpeakerRange = speakerRange;
+		container.m_SpeakerEntity = null;
+		container.m_fNextOcclusionTime = 0;
 	}
 	
 	
@@ -518,8 +613,16 @@ modded class SCR_PlayerController
 		radioComp.WriteJSON(GetLocalControlledEntity());
 	}
 	
+	// Last radio list sent to the server; RadioData.json is rewritten far more often than the list changes
+	string m_sLastSentRadioFreqs = "__unset__";
+	string m_sLastSentFactionKeys = "__unset__";
+	
 	void UpdateFreqArray(string radioFreqs, string factionKeys)
 	{
+		if (radioFreqs == m_sLastSentRadioFreqs && factionKeys == m_sLastSentFactionKeys)
+			return;
+		m_sLastSentRadioFreqs = radioFreqs;
+		m_sLastSentFactionKeys = factionKeys;
 		Rpc(RpcDo_UpdateFreqArray, SCR_PlayerController.GetLocalPlayerId(), radioFreqs, factionKeys);
 	}
 	
@@ -527,14 +630,8 @@ modded class SCR_PlayerController
 	void RpcDo_UpdateFreqArray(int playerId, string radioFreqs, string factionKeys)
 	{
 		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
-		if (!gamemode.m_PlayerFreqArray.Contains(playerId))
-			gamemode.m_PlayerFreqArray.Insert(playerId, radioFreqs);
-		else
-			gamemode.m_PlayerFreqArray.Set(playerId, radioFreqs);
-		
-		if (!gamemode.m_PlayerKeyArray.Contains(playerId))
-			gamemode.m_PlayerKeyArray.Insert(playerId, factionKeys);
-		else
-			gamemode.m_PlayerKeyArray.Set(playerId, factionKeys);
+		if (!gamemode)
+			return;
+		gamemode.SetPlayerFrequencies(playerId, radioFreqs, factionKeys);
 	}
 }

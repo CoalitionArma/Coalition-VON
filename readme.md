@@ -58,3 +58,37 @@ When leaving the game, the plugin returns the player to their previous channel.
 - This file is game-generated. Manual edits should only be made if troubleshooting or testing.
 
 - Any changes to Server Settings only take effect after a server restart.
+
+# For developers: how the game and the plugin talk
+
+The game and the TeamSpeak plugin exchange small files in the client's profile folder (`Documents\My Games\ArmaReforger\profile`). The plugin wakes up whenever one of them changes.
+
+| File | Written by | Purpose |
+|---|---|---|
+| `VONServerData.json` | both | In-game state, TeamSpeak client ID, VON channel and server |
+| `VONData.json` / `VONData.bin` | game, ~20 times a second (immediately on push-to-talk) | Everyone the player can hear: stereo gains, muffling, radio frequency and quality, `IsTransmitting`. The plugin uses whichever was written last. |
+| `RadioData.json` | game, when one of the player's radios changes | The player's radios: frequency, volume, ear, encryption key |
+| `VONHeartbeat.json` | game, every second | Liveness. If it stops while in game (crash), the plugin closes the mic after 3 s and leaves the VON channel after 10 s. |
+| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`). The game only writes `VONData.bin` while this lists `bin1`. |
+| `VONTalking.json` | plugin, while in game | TeamSpeak client IDs currently talking; the game refreshes players who aren't talking less often. |
+
+`VONData.bin` is the same data as `VONData.json` packed into fixed records. Its layout is documented in `load_von_bin_into` (plugin.c) and written by `WriteVONDataBinary` (CVON_SCR_VONController.c); change both together and bump the format version.
+
+Each entry in `VONData` has a `VONType`:
+
+| VONType | Meaning | Plugin sound |
+|---|---|---|
+| 0 Direct | Proximity voice | Positioned by the game's left/right gains; muffle and behind-the-head filters |
+| 1 Radio | Radio transmission | Radio chain if one of the player's radios matches, otherwise direct |
+| 2 Intercom | Talker on the player's vehicle intercom (the listener's game decides this) | Clear, centred, telephone band |
+| 3 Speaker | Radio traffic heard through a nearby vehicle's speaker | Radio chain, then positioned at the vehicle like direct |
+
+Plugins before 3.0 play types 2 and 3 as direct speech.
+
+# Vehicle radios and intercom
+
+`CVON_VehicleRadioComponent` gives a vehicle a radio, a speaker and an intercom. The mod adds it to the vanilla `TrackedVehicle_Base`, `Wheeled_APC_Base` and `Helicopter_Base` prefabs, so vehicles inheriting from those have comms; add it to any other vehicle prefab (or remove it) in Workbench. Settings on the component:
+
+- `m_bHasRadio`, `m_sRadioName`, `m_iRadioRange`, `m_eRadioMenu`: the radio. Only the crew (driver/pilot and turret seats: gunner, commander, door gunner) can use it. While seated it is added after their own radios, on the next free radio key; it opens and tunes like any radio. It takes the vehicle's faction key, or its first crew member's if the vehicle had none.
+- `m_bHasSpeaker`, `m_iSpeakerRange` (25 m): the radio plays out loud. Players near the vehicle hear its traffic unless they have the frequency themselves or are close enough to hear the sender. The crew toggle it with the "Toggle Vehicle Radio Speaker" keybind (Left Ctrl + End).
+- `m_bHasIntercom`, `m_bPassengersOnIntercom` (off): crew hear each other clearly whenever they talk, at any distance between seats. Passenger seats join too when enabled.
