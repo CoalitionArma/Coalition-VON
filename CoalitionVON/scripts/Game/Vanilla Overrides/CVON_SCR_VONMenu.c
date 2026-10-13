@@ -75,25 +75,45 @@ modded class SCR_VONMenu
 		ref array<IEntity> itemsAdded = {};
 		foreach (SCR_VONEntry entry : entries)
 		{
-			if (!SCR_VONEntryRadio.Cast(entry).GetTransceiver())
+			SCR_VONEntryRadio radioEntry = SCR_VONEntryRadio.Cast(entry);
+			if (!radioEntry)
+			{
+				m_VONController.RemoveEntry(entry);
+				continue;
+			}
+			
+			BaseTransceiver transceiver = radioEntry.GetTransceiver();
+			
+			if (!transceiver)
+			{
+				m_VONController.RemoveEntry(entry);
+				continue;
+			}
+			
+			BaseRadioComponent radioComp = transceiver.GetRadio();
+
+			if (!radioComp)
+			{
+				m_VONController.RemoveEntry(entry);
+				continue;
+			}
+			
+			IEntity radio = radioComp.GetOwner();
+
+			if (!radio)
+			{
+				m_VONController.RemoveEntry(entry);
+				continue;
+			}
+			
+			//Filter out any non cvon supported radios.
+			if (!radio.FindComponent(CVON_RadioComponent))
 			{
 				m_VONController.RemoveEntry(entry);
 				continue;
 			}
 
-			if (!SCR_VONEntryRadio.Cast(entry).GetTransceiver().GetRadio())
-			{
-				m_VONController.RemoveEntry(entry);
-				continue;
-			}
-
-			if (!SCR_VONEntryRadio.Cast(entry).GetTransceiver().GetRadio().GetOwner())
-			{
-				m_VONController.RemoveEntry(entry);
-				continue;
-			}
-
-			if (itemsAdded.Contains(SCR_VONEntryRadio.Cast(entry).GetTransceiver().GetRadio().GetOwner()))
+			if (itemsAdded.Contains(radio))
 				continue;
 			AddRadialEntry(entry);
 			itemsAdded.Insert(SCR_VONEntryRadio.Cast(entry).GetTransceiver().GetRadio().GetOwner());
