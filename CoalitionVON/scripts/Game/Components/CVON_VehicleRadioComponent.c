@@ -31,6 +31,9 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 	[Attribute("0", desc: "Comms only when the vehicle's default faction is military. For base prefabs shared with civilian vehicles (cars, trucks).")]
 	bool m_bMilitaryOnly;
 
+	[Attribute("", desc: "Frequency this vehicle's radio starts on, and returns to after a key fill (e.g. an air net for helicopters). Empty: the faction's vehicle frequency, then the frequency config's, then the first long-range frequency.")]
+	string m_sStartFrequency;
+
 	//Military check result: -1 not worked out yet, 0 civilian, 1 military. Comes from prefab data (the
 	//default faction), so every machine reaches the same answer.
 	protected int m_iMilitaryState = -1;
@@ -188,11 +191,75 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 			InitializeForFaction(crewKey);
 		}
 
+		SelectStartingChannel();
+		BumpAndNotify();
+	}
+
+	//Channels were (re)built for the radio's faction
+	//==========================================================================================================================================================================
+	override protected void OnChannelsInitialized()
+	{
+		SelectStartingChannel();
+	}
+
+	//Authority: tune to the starting frequency (GetStartingFrequency), adding it to the channel list if the
+	//list doesn't have it, else channel 1. Sets the channel and the frequency together so they always agree.
+	//==========================================================================================================================================================================
+	protected void SelectStartingChannel()
+	{
 		if (m_aChannels.IsEmpty())
 			m_aChannels.Insert("55500");
-		m_iCurrentChannel = 1;
-		m_sFrequency = m_aChannels.Get(0);
-		BumpAndNotify();
+
+		int index = -1;
+		string startFrequency = GetStartingFrequency();
+		if (startFrequency != "")
+		{
+			index = m_aChannels.Find(startFrequency);
+			if (index < 0)
+				index = m_aChannels.Insert(startFrequency);
+		}
+
+		if (index < 0)
+			index = 0;
+
+		m_iCurrentChannel = index + 1;
+		m_sFrequency = m_aChannels.Get(index);
+	}
+
+	//Where the radio starts, first match wins: this vehicle's m_sStartFrequency, the faction's
+	//vehicle frequency (SCR_FactionCallsignInfo), the frequency config's, then the first long-range
+	//frequency on the radio (it's a LONG radio, so command nets beat the squad nets that head the list).
+	//Empty: none of those apply, start on channel 1.
+	//==========================================================================================================================================================================
+	string GetStartingFrequency()
+	{
+		if (m_sStartFrequency != "")
+			return m_sStartFrequency;
+
+		string factionKey = m_sOriginalFactionKey;
+		if (factionKey == "")
+			factionKey = m_sFactionKey;
+
+		SCR_Faction faction;
+		FactionManager factionManager = GetGame().GetFactionManager();
+		if (factionManager && factionKey != "")
+			faction = SCR_Faction.Cast(factionManager.GetFactionByKey(factionKey));
+		if (faction && faction.GetCallsignInfo() && faction.GetCallsignInfo().m_sVehicleFrequency != "")
+			return faction.GetCallsignInfo().m_sVehicleFrequency;
+
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (gamemode && gamemode.m_FreqConfig && gamemode.m_FreqConfig.m_sVehicleFrequency != "")
+			return gamemode.m_FreqConfig.m_sVehicleFrequency;
+
+		array<string> longRange = {};
+		GetConfiguredLongRangeFrequencies(factionKey, longRange);
+		foreach (string channelFrequency: m_aChannels)
+		{
+			if (longRange.Contains(channelFrequency))
+				return channelFrequency;
+		}
+
+		return "";
 	}
 
 	//Already on this key: the faction's own, or a shared-frequency key listing it ("US|BLUFOR|")

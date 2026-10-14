@@ -534,7 +534,49 @@ class CVON_RadioComponent: ScriptComponent
 			m_iCurrentChannel = 1;
 			m_sFrequency = m_aChannels.Get(0);
 		}
+		OnChannelsInitialized();
 		BumpAndNotify();
+	}
+
+	//Authority: the channel list has just been built for the radio's faction. Handheld radios keep their
+	//channel (players' radios are tuned when they're handed out); vehicle radios pick where they start
+	//(CVON_VehicleRadioComponent).
+	protected void OnChannelsInitialized()
+	{
+	}
+
+	//Every long-range frequency the frequency config gives a faction: the preset groups' and the faction's
+	//own overrides (SCR_FactionCallsignInfo.m_aGroupFrequencyOverrides)
+	void GetConfiguredLongRangeFrequencies(string factionKey, notnull array<string> outFrequencies)
+	{
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (!gamemode || !gamemode.m_FreqConfig)
+			return;
+
+		array<ref CVON_GroupFrequencyContainer> containers = {};
+		foreach (CVON_GroupFrequencyContainer presetContainer: gamemode.m_FreqConfig.m_aPresetGroupFrequencyContainers)
+			containers.Insert(presetContainer);
+
+		SCR_Faction faction;
+		if (GetGame().GetFactionManager() && factionKey != "")
+			faction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(factionKey));
+		if (faction && faction.GetCallsignInfo() && faction.GetCallsignInfo().m_aGroupFrequencyOverrides)
+		{
+			foreach (CVON_GroupFrequencyContainer overrideContainer: faction.GetCallsignInfo().m_aGroupFrequencyOverrides)
+				containers.Insert(overrideContainer);
+		}
+
+		foreach (CVON_GroupFrequencyContainer container: containers)
+		{
+			if (!container || !container.m_aLRFrequencies)
+				continue;
+
+			foreach (string freq: container.m_aLRFrequencies)
+			{
+				if (freq != "" && !outFrequencies.Contains(freq))
+					outFrequencies.Insert(freq);
+			}
+		}
 	}
 
 	protected void AddGroupFrequencies(CVON_GroupFrequencyContainer container, array<string> SRFrequencies, array<string> LRFrequencies)

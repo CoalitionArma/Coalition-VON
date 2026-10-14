@@ -790,7 +790,7 @@ modded class SCR_VONController
 				float maxDistance = reach * reach;
 				container.m_iVolume = volume;
 
-				float distance = vector.DistanceSq(container.m_SoundSource.GetOrigin(), m_Player.GetOrigin());
+				float distance = vector.DistanceSq(container.m_SoundSource.GetOrigin(), GetListenerPosition());
 				if (distance < maxDistance)
 					container.m_fDistanceToSender = distance;
 				else
@@ -860,7 +860,7 @@ modded class SCR_VONController
 
 			float reach = m_VONGameModeComponent.GetPlayerVolume(playerId) + MEMBERSHIP_MARGIN;
 			float maxDistance = reach * reach;
-			float distance = vector.DistanceSq(player.GetOrigin(), m_Player.GetOrigin());
+			float distance = vector.DistanceSq(player.GetOrigin(), GetListenerPosition());
 			if (distance > maxDistance && !onIntercom)
 			{
 				if (existing)
@@ -1242,6 +1242,24 @@ modded class SCR_VONController
 		return head;
 	}
 
+	//Where the local player hears from: their character's head (third person puts the camera metres
+	//away, which pushed whispers out of range), except in Game Master, where the camera has left the
+	//body and voices are heard around the camera. Limited editors such as the Lobby's Tactical Camera
+	//stay on the body, so a leader looking down from one can't overhear voices around the camera.
+	vector GetListenerPosition()
+	{
+		if (m_Camera && IsListeningFromEditorCamera())
+			return m_Camera.GetOrigin();
+
+		return GetHeadHeight(m_Player);
+	}
+
+	bool IsListeningFromEditorCamera()
+	{
+		SCR_EditorManagerEntity editorManager = SCR_EditorManagerEntity.GetInstance();
+		return editorManager && editorManager.IsOpened() && !editorManager.IsLimited();
+	}
+
 	vector ComputeHeadHeight(IEntity entity)
 	{
 		Animation anim = entity.GetAnimation();
@@ -1388,6 +1406,10 @@ modded class SCR_VONController
 		if (!senderEntity)
 			return false;
 
+		//A free-flying Game Master camera isn't in any building or vehicle
+		if (IsListeningFromEditorCamera())
+			return false;
+
 		if (CanPlayerSeeSender(senderEntity, player))
 			return false;
 
@@ -1452,7 +1474,7 @@ modded class SCR_VONController
 		loweredDecibels = container.m_iLoweredDecibles;
 
 		float levelDb = VoiceTierDb(container.m_iVolume) + OcclusionDb(loweredDecibels);
-		ComputeStereoLR(m_Camera, GetHeadHeight(m_Player), GetHeadHeight(container.m_SoundSource), container.m_iVolume, levelDb, behindIntensity, left, right);
+		ComputeStereoLR(m_Camera, GetListenerPosition(), GetHeadHeight(container.m_SoundSource), container.m_iVolume, levelDb, behindIntensity, left, right);
 		return true;
 	}
 
@@ -1504,7 +1526,7 @@ modded class SCR_VONController
 
 		vector speakerPos = speakerRadio.GetSpeakerPosition();
 		float levelDb = SPEAKER_LEVEL_DB + OcclusionDb(loweredDecibels);
-		ComputeStereoLR(m_Camera, GetHeadHeight(m_Player), speakerPos, container.m_iSpeakerRange, levelDb, behindIntensity, left, right);
+		ComputeStereoLR(m_Camera, GetListenerPosition(), speakerPos, container.m_iSpeakerRange, levelDb, behindIntensity, left, right);
 	}
 
 	void ComputeSpectatorLR(int playerId, out float outLeft, out float outRight, out int silencedDecibels = 0)
