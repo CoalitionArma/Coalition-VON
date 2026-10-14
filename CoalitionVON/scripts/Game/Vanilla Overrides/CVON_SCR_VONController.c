@@ -900,6 +900,13 @@ modded class SCR_VONController
 
 	//Hooks for addons such as COALITION-Lobby (spectator channels, AAR). The defaults change nothing.
 	//==========================================================================================================================================================================
+	//Hear from the camera rather than the character's head (GetListenerPosition): Game Master by default;
+	//addons add their own free cameras (e.g. the Lobby's spectator)
+	bool IsListeningFromCamera()
+	{
+		return IsListeningFromEditorCamera();
+	}
+
 	//A talker whose gains come from ComputeSpectatorLR rather than their position (container.m_bIsSpectator)
 	bool IsSpectatorTalker(int playerId)
 	{
@@ -1243,16 +1250,19 @@ modded class SCR_VONController
 	}
 
 	//Where the local player hears from: their character's head (third person puts the camera metres
-	//away, which pushed whispers out of range), except in Game Master, where the camera has left the
-	//body and voices are heard around the camera. Limited editors such as the Lobby's Tactical Camera
-	//stay on the body, so a leader looking down from one can't overhear voices around the camera.
+	//away, which pushed whispers out of range), unless the camera has left the body for good
+	//(IsListeningFromCamera: Game Master, and addons' cases such as spectating) - then voices are heard
+	//around the camera.
 	vector GetListenerPosition()
 	{
-		if (m_Camera && IsListeningFromEditorCamera())
+		if (m_Camera && IsListeningFromCamera())
 			return m_Camera.GetOrigin();
 
 		return GetHeadHeight(m_Player);
 	}
+
+	//Game Master. Limited editors such as the Lobby's Tactical Camera stay on the body, so a leader
+	//looking down from one can't overhear voices around the camera.
 
 	bool IsListeningFromEditorCamera()
 	{
@@ -1406,8 +1416,8 @@ modded class SCR_VONController
 		if (!senderEntity)
 			return false;
 
-		//A free-flying Game Master camera isn't in any building or vehicle
-		if (IsListeningFromEditorCamera())
+		//A free-flying camera isn't in any building or vehicle
+		if (IsListeningFromCamera())
 			return false;
 
 		if (CanPlayerSeeSender(senderEntity, player))
