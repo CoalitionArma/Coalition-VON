@@ -606,6 +606,7 @@ modded class SCR_VONController
 	static const float OCCLUSION_TALKING_INTERVAL = 0.25;	// muffling traces for players who are talking
 	static const float OCCLUSION_SILENT_INTERVAL = 1.0;		// ... and for everyone else
 	static const float PLUGIN_FILES_INTERVAL = 0.25;		// VONPluginInfo.json / VONTalking.json
+	static const float CAMERA_DETACHED_DISTANCE = 30;		// metres between camera and head before hearing follows the camera
 	static const int   PLUGIN_INFO_MAX_AGE = 15;			// seconds; an older info file is left over, the plugin isn't running
 	static const string PLUGIN_INFO_FILE = "$profile:/VONPluginInfo.json";
 	static const string TALKING_FILE = "$profile:/VONTalking.json";
@@ -900,11 +901,11 @@ modded class SCR_VONController
 
 	//Hooks for addons such as COALITION-Lobby (spectator channels, AAR). The defaults change nothing.
 	//==========================================================================================================================================================================
-	//Hear from the camera rather than the character's head (GetListenerPosition): Game Master by default;
-	//addons add their own free cameras (e.g. the Lobby's spectator)
+	//Hear from the camera rather than the character's head (GetListenerPosition): Game Master, or any
+	//camera that has left the body (a spectator camera, a dead player's camera). Addons can widen it.
 	bool IsListeningFromCamera()
 	{
-		return IsListeningFromEditorCamera();
+		return IsListeningFromEditorCamera() || IsCameraDetachedFromBody();
 	}
 
 	//A talker whose gains come from ComputeSpectatorLR rather than their position (container.m_bIsSpectator)
@@ -1251,8 +1252,7 @@ modded class SCR_VONController
 
 	//Where the local player hears from: their character's head (third person puts the camera metres
 	//away, which pushed whispers out of range), unless the camera has left the body for good
-	//(IsListeningFromCamera: Game Master, and addons' cases such as spectating) - then voices are heard
-	//around the camera.
+	//(IsListeningFromCamera: Game Master, spectating) - then voices are heard around the camera.
 	vector GetListenerPosition()
 	{
 		if (m_Camera && IsListeningFromCamera())
@@ -1263,11 +1263,25 @@ modded class SCR_VONController
 
 	//Game Master. Limited editors such as the Lobby's Tactical Camera stay on the body, so a leader
 	//looking down from one can't overhear voices around the camera.
-
 	bool IsListeningFromEditorCamera()
 	{
 		SCR_EditorManagerEntity editorManager = SCR_EditorManagerEntity.GetInstance();
 		return editorManager && editorManager.IsOpened() && !editorManager.IsLimited();
+	}
+
+	//The camera is nowhere near the character: a spectator camera (the Lobby's spectator character is
+	//parked out of the way) or a dead player's camera. Third-person cameras, vehicles' included, stay well
+	//inside CAMERA_DETACHED_DISTANCE. Limited editors (the Tactical Camera) never count.
+	bool IsCameraDetachedFromBody()
+	{
+		if (!m_Camera || !m_Player)
+			return false;
+
+		SCR_EditorManagerEntity editorManager = SCR_EditorManagerEntity.GetInstance();
+		if (editorManager && editorManager.IsOpened())
+			return false;	// Game Master is handled above; limited editors stay on the body
+
+		return vector.DistanceSq(m_Camera.GetOrigin(), GetHeadHeight(m_Player)) > CAMERA_DETACHED_DISTANCE * CAMERA_DETACHED_DISTANCE;
 	}
 
 	vector ComputeHeadHeight(IEntity entity)
