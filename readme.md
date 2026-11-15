@@ -69,7 +69,7 @@ The game and the TeamSpeak plugin exchange small files in the client's profile f
 | `VONData.json` / `VONData.bin` | game, ~20 times a second (immediately on push-to-talk) | Everyone the player can hear: stereo gains, muffling, radio frequency and quality, `IsTransmitting`. The plugin uses whichever was written last. |
 | `RadioData.json` | game, when one of the player's radios changes | The player's radios: frequency, volume, ear, encryption key |
 | `VONHeartbeat.json` | game, every second | Liveness. If it stops while in game (crash), the plugin closes the mic after 3 s and leaves the VON channel after 10 s. |
-| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`). The game only writes `VONData.bin` while this lists `bin1`. |
+| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`, `gamemix1`). The game only writes `VONData.bin` while this lists `bin1`, and only adds `RadioMix` / `GameAudio` to `VONData.json` while it lists `gamemix1`. |
 | `VONTalking.json` | plugin, while in game | TeamSpeak client IDs currently talking; the game refreshes players who aren't talking less often. |
 
 `VONData.bin` is the same data as `VONData.json` packed into fixed records. Its layout is documented in `load_von_bin_into` (plugin.c) and written by `WriteVONDataBinary` (CVON_SCR_VONController.c); change both together and bump the format version.
@@ -84,6 +84,15 @@ Each entry in `VONData` has a `VONType`:
 | 3 Speaker | Radio traffic heard through a nearby vehicle's speaker | Radio chain, then positioned at the vehicle like direct |
 
 Plugins before 3.0 play types 2 and 3 as direct speech.
+
+# Game audio on radio
+
+While a player talks on a radio, the plugin mixes what their game is playing (gunfire, explosions, vehicles, everything the game outputs) into their outgoing voice, so the net hears the sender's surroundings. Players turn it on or off with "Mix Game Audio Into Radio" on the settings menu's **Coalition VON** tab (`CVON_GameSettings.m_bRadioGameAudio`, on by default). Direct speech never carries it.
+
+- **Game → plugin:** `VONData.bin` header flags bit 1 `RadioMix` (talking on a radio with the setting on) and bit 2 `GameAudio` (the setting is on). In `VONData.json` they are the top-level `RadioMix` / `GameAudio` keys, written only for plugins that list `gamemix1`; older plugins would read any other top-level key as a player.
+- **Capture** (`cvon_gameaudio.c`): Windows per-process loopback of the Arma Reforger process (`ArmaReforgerSteam*.exe`, or Workbench when playing in it), so TeamSpeak and other programs are never recorded. Needs Windows 10 version 2004 or later. Elsewhere the capture fails, the plugin retries with a growing delay, and transmissions are plain voice. The capture runs while in game with the setting on, so it is ready when the player keys up.
+- **Mixing** (`ts3plugin_onEditCapturedVoiceDataEvent` in plugin.c): TeamSpeak calls it after its own noise suppression and voice detection, and only frames TeamSpeak is about to send are touched, so a muted mic or voice activation still decide what goes out. The first 250 ms after keying are skipped, so the game's own key-up beep isn't sent. The game audio then fades in, goes through a peak limiter (`GAMEMIX_CEILING`) and drops up to 6 dB while the player speaks. Levels are the `GAMEMIX_*` defines.
+- **Listeners need nothing new:** the mix happens on the sender's side, and the transmission goes through each listener's radio chain as usual. Players close enough to hear the sender directly also get the game audio in their direct audio (TeamSpeak sends one stream to everyone), a little after their own game plays the same sound.
 
 # Vehicle radios and intercom
 

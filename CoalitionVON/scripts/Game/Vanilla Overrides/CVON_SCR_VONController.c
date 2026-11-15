@@ -506,6 +506,16 @@ modded class SCR_VONController
 		m_CurrentVONContainer = container;
 		m_bIsBroadcasting = true;
 		m_bHasBroadcasted = false;
+		if (container.m_eVonType == CVON_EVONType.RADIO)
+			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
+	}
+
+	//True while the player talks on a radio with "mix game audio" on: the plugin then mixes the game's sound
+	//into the transmission. Direct speech never carries it.
+	//==========================================================================================================================================================================
+	bool IsRadioGameAudioActive()
+	{
+		return m_bIsBroadcasting && m_bGameAudioSetting && m_CurrentVONContainer && m_CurrentVONContainer.m_eVonType == CVON_EVONType.RADIO;
 	}
 
 	//No more base game VON
@@ -636,6 +646,12 @@ modded class SCR_VONController
 	bool m_bPluginReadsBinary = false;
 	bool m_bLastWrittenBinary = false;
 	bool m_bPluginReportsTalking = false;
+	// Game audio on radio: the plugin mixes the game's sound into radio transmissions ("gamemix1") while
+	// RadioMix is set, and keeps its capture running while GameAudio (the player's setting) is on.
+	bool m_bPluginMixesGameAudio = false;
+	bool m_bGameAudioSetting = true;
+	bool m_bLastWrittenRadioMix = false;
+	bool m_bLastWrittenGameAudio = false;
 	// TeamSpeak client IDs currently talking (VONTalking.json). Without it everyone counts as talking.
 	ref set<int> m_TalkingClientIds = new set<int>();
 
@@ -693,6 +709,7 @@ modded class SCR_VONController
 
 		if (!m_bFirstConnect)
 		{
+			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
 			ReadPluginFiles();
 			WriteJSON(true, true);
 			m_bFirstConnect = true;
@@ -747,7 +764,10 @@ modded class SCR_VONController
 		m_fServerDataBuffer += timeSlice;
 		bool checkServerData = (m_fServerDataBuffer >= 1.0);
 		if (checkServerData)
+		{
 			m_fServerDataBuffer = 0;
+			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
+		}
 
 		// VONData is written at ~20 Hz, but straight away when push-to-talk changes
 		bool gainTick = m_fTime >= m_fNextGain;
@@ -1035,6 +1055,7 @@ modded class SCR_VONController
 	{
 		bool binary = false;
 		bool talking = false;
+		bool gameMix = false;
 		SCR_JsonLoadContext info = new SCR_JsonLoadContext();
 		if (info.LoadFromFile(PLUGIN_INFO_FILE))
 		{
@@ -1049,10 +1070,12 @@ modded class SCR_VONController
 			{
 				binary = features.Contains("bin1");
 				talking = features.Contains("talking1");
+				gameMix = features.Contains("gamemix1");
 			}
 		}
 		m_bPluginReadsBinary = binary;
 		m_bPluginReportsTalking = talking;
+		m_bPluginMixesGameAudio = gameMix;
 
 		m_TalkingClientIds.Clear();
 		if (!talking)
@@ -1759,7 +1782,9 @@ modded class SCR_VONController
 		bool dirty = firstConnect ||
 					 (m_bIsBroadcasting != m_bLastWrittenTransmitting) ||
 					 (currentEntryCount != m_iLastWrittenEntryCount) ||
-					 (m_bPluginReadsBinary != m_bLastWrittenBinary);
+					 (m_bPluginReadsBinary != m_bLastWrittenBinary) ||
+					 (IsRadioGameAudioActive() != m_bLastWrittenRadioMix) ||
+					 (m_bGameAudioSetting != m_bLastWrittenGameAudio);
 
 		// Work out each entry. Players who aren't talking are refreshed every SILENT_GAIN_DIVIDER-th tick,
 		// and the muffling traces run on their own slower schedule per sender.
@@ -1873,6 +1898,8 @@ modded class SCR_VONController
 		m_bLastWrittenTransmitting = m_bIsBroadcasting;
 		m_iLastWrittenEntryCount = currentEntryCount;
 		m_bLastWrittenBinary = m_bPluginReadsBinary;
+		m_bLastWrittenRadioMix = IsRadioGameAudioActive();
+		m_bLastWrittenGameAudio = m_bGameAudioSetting;
 	}
 
 	//VONData.json: what every plugin version reads
@@ -1881,6 +1908,12 @@ modded class SCR_VONController
 	{
 		SCR_JsonSaveContext VONSave = new SCR_JsonSaveContext();
 		VONSave.WriteValue("IsTransmitting", m_bIsBroadcasting);
+		// Only for plugins that know them: older ones read every top-level key except IsTransmitting as a player
+		if (m_bPluginMixesGameAudio)
+		{
+			VONSave.WriteValue("RadioMix", IsRadioGameAudioActive());
+			VONSave.WriteValue("GameAudio", m_bGameAudioSetting);
+		}
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
 			VONSave.StartObject(container.m_iCachedClientId.ToString());
@@ -1945,9 +1978,14 @@ modded class SCR_VONController
 		m_mBinStringIndex.Clear();
 		m_iBinarySeq++;
 
+		// bit0 IsTransmitting, bit1 RadioMix, bit2 GameAudio (older plugins only read bit0)
 		int flags = 0;
 		if (m_bIsBroadcasting)
 			flags = 1;
+		if (IsRadioGameAudioActive())
+			flags = flags | 2;
+		if (m_bGameAudioSetting)
+			flags = flags | 4;
 
 		// Header; the entry and string counts are filled in below
 		m_aBinWords.Insert(VONBIN_MAGIC);

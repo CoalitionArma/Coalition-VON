@@ -17,6 +17,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="cvon_gameaudio.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="plugin.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -25,6 +28,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="cvon_gameaudio.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="plugin.h">
       <Filter>Header Files</Filter>
     </ClInclude>

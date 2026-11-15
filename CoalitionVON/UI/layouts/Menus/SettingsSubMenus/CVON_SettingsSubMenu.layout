@@ -1,0 +1,105 @@
+HorizontalLayoutWidgetClass {
+ Name "CVONSettings"
+ components {
+  CVON_SettingsSubMenu "{DC9ACD2C86A02DCB}" {
+  }
+ }
+ {
+  ScrollLayoutWidgetClass "{8B4DEC4D344D7F16}" {
+   Name "ScrollLayout0"
+   Slot LayoutSlot "{CF589B6552D5C324}" {
+    Padding -2 72 2 0
+    SizeMode Fill
+    FillWeight 1.433
+   }
+   components {
+    SCR_GamepadScrollComponent "{5DE87ED7DB61D5F7}" {
+    }
+   }
+   style Small
+   {
+    HorizontalLayoutWidgetClass "{197C749751303F98}" {
+     Name "Layout"
+     Slot AlignableSlot "{2E210AD5F5B0612F}" {
+      HorizontalAlign 3
+      VerticalAlign 3
+     }
+     {
+      VerticalLayoutWidgetClass "{E50EC054A6A23F55}" {
+       Name "Content"
+       Slot LayoutSlot "{0BFE1748F95718C5}" {
+        SizeMode Fill
+       }
+       {
+        VerticalLayoutWidgetClass "{9BA120F9E0948CBE}" : "{FEEEB639F2735BA1}UI/layouts/Menus/SettingsMenu/CustomWidgets/SettingsTitle.layout" {
+         Name "TitleRadio"
+         Slot LayoutSlot "{58B32278C99818F2}" {
+         }
+         components {
+          SCR_LabelComponent "{58B30C1A8E56F0FF}" {
+           m_sLabel "Radio"
+           m_fPaddingTop 4
+          }
+         }
+         {
+          TextWidgetClass "{58B30C1F77EC7B4E}" {
+           Prefab "{58B30C1F77EC7B4E}"
+           Slot LayoutSlot "{58B30C1F77EC7B76}" {
+            Padding 39 4 39 20
+           }
+          }
+         }
+        }
+        ButtonWidgetClass "{FC5496E0A9102524}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+         Name "m_bRadioGameAudio"
+         Slot LayoutSlot "{54890CCD61050681}" {
+          Padding 4 4 4 4
+         }
+         components {
+          SCR_SpinBoxComponent "{5472C6CBC0640458}" {
+           m_sLabel "Mix Game Audio Into Radio"
+           m_sLabelLayout "{F003823FF141983C}UI/layouts/Menus/SettingsMenu/CustomWidgets/SettingsLabel.layout"
+           m_aElementNames {
+            "#AR-UI_No" "#AR-UI_Yes"
+           }
+           m_bUseLightArrows 1
+           m_bCycleMode 1
+          }
+         }
+        }
+        TextWidgetClass "{EE18676835D89B38}" {
+         Name "RadioGameAudioHint"
+         Slot LayoutSlot "{ACD846BB8840A6CF}" {
+          Padding 39 8 39 4
+         }
+         Color 0.456 0.456 0.456 1
+         Text "While you talk on a radio, the Coalition TeamSpeak plugin mixes what your game is playing (gunfire, explosions, vehicles) into your transmission. Direct speech is never affected. Needs Windows 10 version 2004 or later."
+         "Font Size" 18
+         "Min Font Size" 14
+         Wrap 1
+         FontProperties FontProperties "{79A3A0353383E0D3}" {
+          Font "{E2CBA6F76AAA42AF}UI/Fonts/Roboto/Roboto_Regular.fnt"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+  VerticalLayoutWidgetClass "{9DE5FD01C22F08DC}" {
+   Name "Description"
+   Slot LayoutSlot "{33FDD82E19BA32A9}" {
+    SizeMode Fill
+   }
+   {
+    FrameWidgetClass "{D628105AF163187C}" {
+     Name "Frame"
+     Slot LayoutSlot "{DFDC8D7666F79B38}" {
+      SizeMode Fill
+     }
+    }
+   }
+  }
+ }
+}
