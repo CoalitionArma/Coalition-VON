@@ -1223,6 +1223,8 @@ modded class SCR_VONController
 	IEntity m_IntercomVehicle;
 	// Last vehicle we were told about, so the hint shows once per vehicle
 	IEntity m_LastCommsVehicle;
+	// On a vehicle's intercom through its infantry phone (on foot) when last told
+	bool m_bLastOnPhone;
 
 	//Keeps the vehicle radio in our radio list in step with our seat, and says what's connected
 	void RefreshVehicleComms()
@@ -1237,9 +1239,19 @@ modded class SCR_VONController
 		IEntity commsVehicle = m_IntercomVehicle;
 		if (!commsVehicle)
 			commsVehicle = radioEntity;
-		if (commsVehicle == m_LastCommsVehicle)
+		bool onPhone = m_IntercomVehicle && !CVON_VehicleComms.GetSeat(m_Player);
+		if (commsVehicle == m_LastCommsVehicle && onPhone == m_bLastOnPhone)
 			return;
+		bool wasOnPhone = m_bLastOnPhone;
 		m_LastCommsVehicle = commsVehicle;
+		m_bLastOnPhone = onPhone;
+		if (onPhone)
+		{
+			SCR_HintManagerComponent.ShowCustomHint("Infantry phone: you're on the crew intercom", "Coalition VON", 4);
+			return;
+		}
+		if (wasOnPhone && !commsVehicle)
+			SCR_HintManagerComponent.ShowCustomHint("Infantry phone hung up", "Coalition VON", 2);
 		if (!commsVehicle)
 			return;
 

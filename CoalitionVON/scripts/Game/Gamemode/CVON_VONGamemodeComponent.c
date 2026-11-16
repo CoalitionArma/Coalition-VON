@@ -54,6 +54,10 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	// its frequency
 	ref array<CVON_RadioComponent> m_aSpeakerRadios = {};
 
+	// Every machine: vehicles with an infantry phone, so its holder can be put on the crew intercom
+	// (CVON_VehicleComms.GetPhoneVehicle)
+	ref array<CVON_VehicleRadioComponent> m_aVehicleComms = {};
+
 	// Server: radios whose handset someone is holding, so the holder's radios can include it
 	ref array<CVON_RadioComponent> m_aHeldHandsets = {};
 
@@ -520,6 +524,17 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	void UnregisterSpeakerRadio(CVON_RadioComponent radio)
 	{
 		m_aSpeakerRadios.RemoveItem(radio);
+	}
+
+	void RegisterVehicleComms(CVON_VehicleRadioComponent comms)
+	{
+		if (!m_aVehicleComms.Contains(comms))
+			m_aVehicleComms.Insert(comms);
+	}
+
+	void UnregisterVehicleComms(CVON_VehicleRadioComponent comms)
+	{
+		m_aVehicleComms.RemoveItem(comms);
 	}
 
 	void SetHandsetHeld(CVON_RadioComponent radio, bool held)

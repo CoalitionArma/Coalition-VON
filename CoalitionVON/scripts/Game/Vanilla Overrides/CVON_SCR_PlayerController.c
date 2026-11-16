@@ -267,6 +267,45 @@ modded class SCR_PlayerController
 		radio.GrabHandsetServer(user);
 	}
 
+	//Pick up or hang up the infantry phone at the back of an armoured vehicle (CVON_InfantryPhoneAction)
+	//==========================================================================================================================================================================
+	void ToggleInfantryPhone(RplId vehicleId)
+	{
+		Rpc(RpcAsk_ToggleInfantryPhone, vehicleId);
+	}
+
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	void RpcAsk_ToggleInfantryPhone(RplId vehicleId)
+	{
+		IEntity user = GetControlledEntity();
+		if (!user)
+			return;
+
+		RplComponent vehicleRpl = RplComponent.Cast(Replication.FindItem(vehicleId));
+		if (!vehicleRpl || !vehicleRpl.GetEntity())
+			return;
+
+		CVON_VehicleRadioComponent comms = CVON_VehicleRadioComponent.Cast(vehicleRpl.GetEntity().FindComponent(CVON_VehicleRadioComponent));
+		if (!comms)
+			return;
+
+		if (comms.IsPhoneHeldBy(user))
+		{
+			comms.HangUpPhoneServer();
+			return;
+		}
+
+		//Someone else has it
+		if (comms.GetPhoneHolder() || !comms.HasInfantryPhone() || !comms.CanUsePhone(user, CVON_VehicleRadioComponent.PHONE_REACH))
+			return;
+
+		//One phone at a time
+		CVON_VehicleRadioComponent held = CVON_VehicleComms.GetPhoneVehicle(user);
+		if (held)
+			held.HangUpPhoneServer();
+		comms.PickUpPhoneServer(user);
+	}
+
 	//The vehicle radio we can use while in a crew seat, kept at the end of m_aRadios so the inventory
 	//radios keep their keys (and their indices match the server's list)
 	IEntity m_VehicleRadio;

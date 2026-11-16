@@ -10,6 +10,30 @@ Vehicle {
    m_sDialOff "{A744E80C100B0FC5}UI/layouts/Radios/ANPRC117/data/ANPRC117DialOff.edds"
    m_eRadioMenu ANPRC117
    m_iSpeakerRange 25
+   m_bHasInfantryPhone 1
+  }
+  ActionsManagerComponent "{C97BE5489221AE18}" {
+   ActionContexts {
+    UserActionContext "{177437758EE4AEFA}" {
+     ContextName "CVON_InfantryPhone"
+     Position PointInfo "{937D05DAB3AC33AB}" {
+      Offset 0 1 0
+     }
+     Radius 6
+     Height 0
+    }
+   }
+   additionalActions {
+    CVON_InfantryPhoneAction "{23D202D6535FAF68}" {
+     ParentContextList {
+      "CVON_InfantryPhone"
+     }
+     UIInfo UIInfo "{E5483FE9DC91A942}" {
+      Name "Infantry Phone"
+     }
+     Duration 0.5
+    }
+   }
   }
  }
 }

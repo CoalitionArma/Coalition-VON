@@ -31,6 +31,17 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 	[Attribute("0", desc: "Comms only when the vehicle's default faction is military. For base prefabs shared with civilian vehicles (cars, trucks).")]
 	bool m_bMilitaryOnly;
 
+	[Attribute("0", desc: "Infantry phone at the back of the vehicle: someone standing behind it can pick it up and talk with the crew over the intercom. Needs the intercom, and the CVON_InfantryPhone action context and CVON_InfantryPhoneAction on the vehicle's ActionsManagerComponent (see TrackedVehicle_Base).")]
+	bool m_bHasInfantryPhone;
+
+	//Who is holding the infantry phone (their character's RplId); invalid when nobody is
+	[RplProp()] RplId m_PhoneHolder = RplId.Invalid();
+
+	static const float PHONE_REACH = 2.0;		// metres (flat) from the phone to pick it up
+	static const float PHONE_CORD_LENGTH = 4.0;	// metres (flat) before the cord pulls it out of your hand
+	static const float PHONE_HEIGHT = 1.0;		// metres above the bottom of the vehicle
+	static const int PHONE_CHECK_MS = 500;
+
 	[Attribute("", desc: "Frequency this vehicle's radio starts on, and returns to after a key fill (e.g. an air net for helicopters). Empty: the faction's vehicle frequency, then the frequency config's, then the first long-range frequency.")]
 	string m_sStartFrequency;
 
@@ -123,24 +134,126 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		return GetOwner().CoordToParent(offset);
 	}
 
+	//Infantry phone: a handset at the back of the vehicle. Whoever holds it is on the crew intercom
+	//(CVON_VehicleComms.GetIntercomVehicle), so they and the crew hear each other clearly.
+	//==========================================================================================================================================================================
+	bool HasInfantryPhone()
+	{
+		if (!m_bHasInfantryPhone || !HasIntercom())
+			return false;
+
+		DamageManagerComponent damage = DamageManagerComponent.Cast(GetOwner().FindComponent(DamageManagerComponent));
+		return !damage || damage.GetState() != EDamageState.DESTROYED;
+	}
+
+	//Where the phone hangs: the middle of the vehicle's rear (vehicles face +Z), about waist height
+	vector GetPhonePosition()
+	{
+		vector mins, maxs;
+		GetOwner().GetBounds(mins, maxs);
+		vector local = Vector((mins[0] + maxs[0]) * 0.5, mins[1] + PHONE_HEIGHT, mins[2]);
+		return GetOwner().CoordToParent(local);
+	}
+
+	//On foot, alive and within reach of the phone
+	bool CanUsePhone(IEntity character, float reach)
+	{
+		ChimeraCharacter chimera = ChimeraCharacter.Cast(character);
+		if (!chimera || CVON_VehicleComms.GetSeat(character))
+			return false;
+
+		CharacterControllerComponent controller = chimera.GetCharacterController();
+		if (!controller || controller.GetLifeState() != ECharacterLifeState.ALIVE)
+			return false;
+
+		vector phone = GetPhonePosition();
+		vector origin = character.GetOrigin();
+		return vector.DistanceXZ(origin, phone) <= reach && Math.AbsFloat(origin[1] - phone[1]) <= 2.5;
+	}
+
+	bool IsPhoneHeldBy(IEntity character)
+	{
+		if (!character || m_PhoneHolder == RplId.Invalid())
+			return false;
+
+		RplComponent rpl = RplComponent.Cast(character.FindComponent(RplComponent));
+		return rpl && rpl.Id() == m_PhoneHolder;
+	}
+
+	IEntity GetPhoneHolder()
+	{
+		if (m_PhoneHolder == RplId.Invalid())
+			return null;
+
+		RplComponent rpl = RplComponent.Cast(Replication.FindItem(m_PhoneHolder));
+		if (!rpl)
+			return null;
+		return rpl.GetEntity();
+	}
+
+	//Authority (validated by SCR_PlayerController.RpcAsk_ToggleInfantryPhone)
+	void PickUpPhoneServer(IEntity holder)
+	{
+		RplComponent rpl = RplComponent.Cast(holder.FindComponent(RplComponent));
+		if (!rpl)
+			return;
+
+		m_PhoneHolder = rpl.Id();
+		Replication.BumpMe();
+		GetGame().GetCallqueue().Remove(CheckPhone);
+		GetGame().GetCallqueue().CallLater(CheckPhone, PHONE_CHECK_MS, true);
+	}
+
+	void HangUpPhoneServer()
+	{
+		GetGame().GetCallqueue().Remove(CheckPhone);
+		if (m_PhoneHolder == RplId.Invalid())
+			return;
+
+		m_PhoneHolder = RplId.Invalid();
+		Replication.BumpMe();
+	}
+
+	//Authority, while held: the cord only reaches so far, and the phone drops when the holder dies, is
+	//knocked out, gets in a vehicle or the vehicle is destroyed
+	protected void CheckPhone()
+	{
+		IEntity holder = GetPhoneHolder();
+		if (!holder || !HasInfantryPhone() || !CanUsePhone(holder, PHONE_CORD_LENGTH))
+			HangUpPhoneServer();
+	}
+
 	//==========================================================================================================================================================================
 	override void OnPostInit(IEntity owner)
 	{
 		super.OnPostInit(owner);
-		//One frame on the authority to register the speaker (the gamemode may not exist yet at post init)
+		//One frame to register with the gamemode (it may not exist yet at post init)
 		SetEventMask(owner, EntityEvent.FRAME);
 	}
 
-	//Authority, once: register with the gamemode so transmissions can find this speaker, and take the
-	//vehicle's faction until a crew member key-fills it with theirs (KeyFillFromCrew, VONVehicleKeyFill keybind).
+	void ~CVON_VehicleRadioComponent()
+	{
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (gamemode)
+			gamemode.UnregisterVehicleComms(this);
+		if (GetGame() && GetGame().GetCallqueue())
+			GetGame().GetCallqueue().Remove(CheckPhone);
+	}
+
+	//Once: every machine registers the vehicle so infantry phone holders can be found (GetPhoneVehicle).
+	//The authority also registers the speaker so transmissions can find it, and takes the vehicle's faction
+	//until a crew member key-fills it with theirs (KeyFillFromCrew, VONVehicleKeyFill keybind).
 	//==========================================================================================================================================================================
 	override void EOnFrame(IEntity owner, float timeSlice)
 	{
 		ClearEventMask(owner, EntityEvent.FRAME);
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (gamemode && m_bHasInfantryPhone)
+			gamemode.RegisterVehicleComms(this);
+
 		if (!Replication.IsServer())
 			return;
 
-		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
 		if (!gamemode || !HasRadio())
 			return;
 
@@ -392,12 +505,44 @@ class CVON_VehicleComms
 		return comms;
 	}
 
-	//The vehicle whose intercom this character is on, or null
+	//The vehicle whose infantry phone this character is holding, or null
+	static CVON_VehicleRadioComponent GetPhoneVehicle(IEntity character)
+	{
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (!character || !gamemode)
+			return null;
+
+		RplId characterId = RplId.Invalid();
+		foreach (CVON_VehicleRadioComponent comms: gamemode.m_aVehicleComms)
+		{
+			if (!comms || comms.m_PhoneHolder == RplId.Invalid())
+				continue;
+
+			// Only looked up once a phone is actually held
+			if (characterId == RplId.Invalid())
+			{
+				RplComponent rpl = RplComponent.Cast(character.FindComponent(RplComponent));
+				if (!rpl)
+					return null;
+				characterId = rpl.Id();
+			}
+			if (comms.m_PhoneHolder == characterId && comms.HasInfantryPhone())
+				return comms;
+		}
+		return null;
+	}
+
+	//The vehicle whose intercom this character is on (seated, or holding its infantry phone), or null
 	static IEntity GetIntercomVehicle(IEntity character)
 	{
 		BaseCompartmentSlot seat = GetSeat(character);
 		if (!seat)
+		{
+			CVON_VehicleRadioComponent phone = GetPhoneVehicle(character);
+			if (phone)
+				return phone.GetOwner();
 			return null;
+		}
 
 		CVON_VehicleRadioComponent comms = GetVehicleComms(seat);
 		if (!comms || !comms.HasIntercom())
