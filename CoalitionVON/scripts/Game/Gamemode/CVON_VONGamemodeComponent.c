@@ -30,7 +30,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	[RplProp()] ref array<int> m_aPlayerVolumes = {};
 	[RplProp()] ref array<int> m_aPlayerClientIds = {};
 	[RplProp()] ref array<int> m_aPlayerIds = {};
-	string m_sTeamspeakPluginVersion = "3.2.1";
+	string m_sTeamspeakPluginVersion = "3.2.3";
 	ref map <int, string> m_PlayerFreqArray = new map <int, string>;
 	ref map <int, string> m_PlayerKeyArray = new map <int, string>;
 
