@@ -6,6 +6,13 @@ enum CVON_ESettingEnforcement
 	FORCE_OFF
 }
 
+//Whether a radio can receive while its user transmits on it
+enum CVON_ERadioDuplex
+{
+	HALF,	//no: while you transmit, you don't hear that frequency (people next to you are still heard directly)
+	FULL	//yes: transmit and receive at the same time
+}
+
 //Server-wide CVON settings. Where they come from, highest priority first:
 //  1. the server config: "missionHeader": { "m_CVON_Settings": { ... } } (see readme), as ACE does it
 //  2. the mission: m_MissionSettings on the world's CVON_VONGameModeComponent
@@ -25,12 +32,15 @@ class CVON_ServerSettings
 	[Attribute("1", UIWidgets.Slider, desc: "How much terrain weakens radio signals (0 = none, 1 = normal, 2 = double)", params: "0 2 0.05")]
 	float m_fTerrainBlockStrength;
 
-	[Attribute("1", desc: "Two players transmitting on the same frequency at once step on each other: the stronger signal is heard with a squeal, the weaker is lost")]
-	bool m_bRadioCollisions;
+	[Attribute(SCR_Enum.GetDefault(CVON_ERadioDuplex.HALF), UIWidgets.ComboBox, desc: "0 = half duplex: a radio can't receive while its user transmits on it. 1 = full duplex: radios receive and transmit at the same time", enums: ParamEnumArray.FromEnum(CVON_ERadioDuplex))]
+	CVON_ERadioDuplex m_eRadioDuplex;
 
 	[Attribute("1", desc: "Listeners hear a squelch burst when a transmission opens and a squelch tail when it closes")]
 	bool m_bSquelchTones;
 
 	[Attribute("1", desc: "A radio operator killed or knocked out mid-transmission is cut off with a burst of static")]
 	bool m_bTransmissionCutOff;
+
+	[Attribute("0", UIWidgets.Slider, desc: "Enemy AI can hear players talking within their voice range and turn toward them (0 = off, 1 = AI in range hear you almost at once, even through walls)", params: "0 1 0.05")]
+	float m_fAIHearing;
 }

@@ -443,6 +443,8 @@ modded class SCR_VONController
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
 						return;
+					if (RefuseIfChannelBusy(radioComp))
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -466,6 +468,8 @@ modded class SCR_VONController
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
 						return;
+					if (RefuseIfChannelBusy(radioComp))
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -488,6 +492,8 @@ modded class SCR_VONController
 
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
+						return;
+					if (RefuseIfChannelBusy(radioComp))
 						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
@@ -589,59 +595,69 @@ modded class SCR_VONController
 		return container.m_fTerrainFactor;
 	}
 
-	//Several transmissions on one frequency at once (same time deviation and key) step on each other, as on an
-	//FM radio: the strongest signal captures the receiver and is heard with a squeal, the others are lost.
-	//Sets m_iCollision on each radio and speaker entry.
+	//Half duplex (server setting), receiving side: while the player transmits on a radio, that radio can't
+	//receive. Radio traffic on the frequency they're transmitting on is then treated like traffic they have no
+	//radio for: only heard directly, if the sender is close enough.
 	//==========================================================================================================================================================================
-	protected ref map<string, CVON_VONContainer> m_mStrongestOnNet = new map<string, CVON_VONContainer>();
-	protected ref map<string, int> m_mTransmittersOnNet = new map<string, int>();
-
-	protected void UpdateCollisions()
+	protected bool IsBlockedByOwnTransmission(CVON_VONContainer container)
 	{
-		bool enabled = IsServerSettingOn(CVON_VONGameModeComponent.SETTING_COLLISIONS);
-		m_mStrongestOnNet.Clear();
-		m_mTransmittersOnNet.Clear();
-
-		if (enabled)
-		{
-			foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
-			{
-				string net = CollisionNet(container);
-				if (net.IsEmpty())
-					continue;
-
-				m_mTransmittersOnNet.Set(net, m_mTransmittersOnNet.Get(net) + 1);
-				CVON_VONContainer strongest = m_mStrongestOnNet.Get(net);
-				if (!strongest || container.m_fConnectionQuality > strongest.m_fConnectionQuality)
-					m_mStrongestOnNet.Set(net, container);
-			}
-		}
-
-		foreach (int entryPlayerId, CVON_VONContainer entry: m_PlayerController.m_aLocalEntries)
-		{
-			entry.m_iCollision = COLLISION_NONE;
-			if (!enabled)
-				continue;
-
-			string entryNet = CollisionNet(entry);
-			if (entryNet.IsEmpty() || m_mTransmittersOnNet.Get(entryNet) < 2)
-				continue;
-
-			if (m_mStrongestOnNet.Get(entryNet) == entry)
-				entry.m_iCollision = COLLISION_CAPTURED;
-			else
-				entry.m_iCollision = COLLISION_LOST;
-		}
+		if (!m_bIsBroadcasting || !m_CurrentVONContainer || m_CurrentVONContainer.m_eVonType != CVON_EVONType.RADIO)
+			return false;
+		if (container.m_eVonType != CVON_EVONType.RADIO || container.m_sFrequency.IsEmpty())
+			return false;
+		if (container.m_sFrequency != m_CurrentVONContainer.m_sFrequency)
+			return false;
+		return IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HALF_DUPLEX);
 	}
 
-	//The net an entry transmits on, or "" for entries that can't collide (direct, intercom, cut off, dead listener)
-	protected string CollisionNet(CVON_VONContainer container)
+	//Half duplex, transmitting side (busy channel lockout): the radio won't key while it's receiving someone
+	//on its frequency, time deviation and key, as heard here (in range, past the hills). The player gets an
+	//error tone and has to press again once the channel is clear. Two players keying within the same moment
+	//can both get through, as neither has heard the other yet.
+	//==========================================================================================================================================================================
+	protected bool IsChannelBusy(CVON_RadioComponent radioComp)
 	{
-		if (container.m_bCutOff || container.m_bOnIntercom || container.m_sCachedFreq.IsEmpty() || container.m_sCachedFreq == "__unset__")
-			return "";
-		if (container.m_iCachedType != CVON_EVONType.RADIO && container.m_iCachedType != CVON_EVONType.SPEAKER)
-			return "";
-		return string.Format("%1|%2|%3", container.m_sFrequency, container.m_iTimeDeviation, container.m_sFactionKey);
+		if (!IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HALF_DUPLEX))
+			return false;
+
+		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
+		{
+			if (container.m_eVonType != CVON_EVONType.RADIO || container.m_bCutOff || container.m_bIsSpectator)
+				continue;
+			if (container.m_sFrequency != radioComp.m_sFrequency || container.m_iTimeDeviation != radioComp.m_iTimeDeviation)
+				continue;
+			if (HasRadioKey(container.m_sFactionKey) && HasRadioKey(radioComp.m_sFactionKey) && container.m_sFactionKey != radioComp.m_sFactionKey)
+				continue;
+			if (RadioSignalAtReceiver(container) > 0)
+				return true;
+		}
+		return false;
+	}
+
+	//Same rule as the plugin: an empty key or "0" means no key
+	protected bool HasRadioKey(string key)
+	{
+		return !key.IsEmpty() && key != "0";
+	}
+
+	//==========================================================================================================================================================================
+	protected bool RefuseIfChannelBusy(CVON_RadioComponent radioComp)
+	{
+		if (!IsChannelBusy(radioComp))
+			return false;
+		SCR_UISoundEntity.SoundEvent(SCR_SoundEvent.SOUND_RADIO_CHANGEFREQUENCY_ERROR);
+		return true;
+	}
+
+	//The signal a radio transmission arrives with at the player's radio: distance, then hills in the way
+	//==========================================================================================================================================================================
+	protected float RadioSignalAtReceiver(CVON_VONContainer container)
+	{
+		vector receiver = GetRadioReceiverOrigin();
+		vector sender = container.m_vSenderLocation;
+		if (container.m_SoundSource)
+			sender = container.m_SoundSource.GetOrigin();
+		return GetSignalStrength(vector.Distance(receiver, sender), container.m_iMaxDistance) * GetTerrainFactor(container, receiver, sender);
 	}
 
 	//True while the player talks on a radio with "mix game audio" on: the plugin then mixes the game's sound
@@ -805,16 +821,13 @@ modded class SCR_VONController
 	bool m_bLastWrittenRadioMix = false;
 	bool m_bLastWrittenGameAudio = false;
 
-	// Radio immersion ("immersion1"): squelch tones, collisions and the cut-off (see UpdateCollisions,
-	// GetTerrainFactor). The server settings switch each one.
+	// Radio immersion: squelch tones and the cut-off need the plugin ("immersion1"); terrain (GetTerrainFactor)
+	// and half duplex (IsBlockedByOwnTransmission) are worked out here. The server settings switch each one.
 	bool m_bPluginImmersion = false;
 	bool m_bLastWrittenSquelch = false;
 	// The next radio release is a cut-off (killed or knocked out mid-transmission)
 	bool m_bCutOffOnDeactivate = false;
 
-	static const int COLLISION_NONE = 0;
-	static const int COLLISION_CAPTURED = 1;	// strongest of several on the frequency: heard, with a squeal
-	static const int COLLISION_LOST = 2;		// a weaker one: almost nothing gets through
 	static const int CUT_OFF_HOLD_MS = 500;		// how long a cut-off entry stays so the plugin can play it
 
 	// Terrain between radios (GetTerrainFactor)
@@ -905,6 +918,7 @@ modded class SCR_VONController
 		{
 			m_fNextPluginFiles = m_fTime + PLUGIN_FILES_INTERVAL;
 			ReadPluginFiles();
+			UpdateSpeakingForAI();
 		}
 
 		//Handles broadcasting to other players
@@ -1275,6 +1289,25 @@ modded class SCR_VONController
 	bool IsTalking(int clientId)
 	{
 		return !m_bPluginReportsTalking || m_TalkingClientIds.Contains(clientId);
+	}
+
+	//AI hearing (server setting): tells the server when this player starts and stops talking, from the
+	//plugin's talking list, which includes our own TeamSpeak client. Plugins that don't report talking never
+	//count as talking here, so their players aren't heard by AI rather than always heard.
+	//==========================================================================================================================================================================
+	protected bool m_bReportedSpeakingForAI = false;
+
+	protected void UpdateSpeakingForAI()
+	{
+		bool speaking = false;
+		if (m_bPluginReportsTalking && m_VONGameModeComponent && m_VONGameModeComponent.GetAIHearing() > 0
+			&& m_CharacterController && m_CharacterController.GetLifeState() == ECharacterLifeState.ALIVE)
+			speaking = m_TalkingClientIds.Contains(m_PlayerController.GetTeamspeakClientId());
+
+		if (speaking == m_bReportedSpeakingForAI)
+			return;
+		m_bReportedSpeakingForAI = speaking;
+		m_PlayerController.SetSpeakingForAI(speaking);
 	}
 
 	//Voice levels: how loud a talker is in each ear, from distance, their voice range setting, walls and
@@ -2025,16 +2058,16 @@ modded class SCR_VONController
 			else
 			{
 				ComputeDirectLR(container, playerId, talking, left, right, behindIntensity, loweredDecibels);
+
+				//Half duplex: our radio is transmitting, so it hears nothing on this frequency. Without a
+				//frequency the plugin plays them as direct speech, at the direct gains above.
+				if (IsBlockedByOwnTransmission(container))
+					frequency = "";
 			}
 
 			if (container.m_eVonType == CVON_EVONType.RADIO)
 			{
-				vector receiver = GetRadioReceiverOrigin();
-				vector sender = container.m_vSenderLocation;
-				if (container.m_SoundSource)
-					sender = container.m_SoundSource.GetOrigin();
-				//Distance sets the signal; hills in the way weaken it further
-				container.m_fConnectionQuality = GetSignalStrength(vector.Distance(receiver, sender), container.m_iMaxDistance) * GetTerrainFactor(container, receiver, sender);
+				container.m_fConnectionQuality = RadioSignalAtReceiver(container);
 			}
 			else if (container.m_eVonType == CVON_EVONType.SPEAKER && container.m_SpeakerEntity)
 			{
@@ -2071,13 +2104,10 @@ modded class SCR_VONController
 			container.m_iCachedType     = outType;
 		}
 
-		// Needs every entry's type and signal from the loop above
-		UpdateCollisions();
 		foreach (int entryPlayerId, CVON_VONContainer entry: m_PlayerController.m_aLocalEntries)
 		{
-			if (entry.m_iCollision != entry.m_iCachedCollision || entry.m_bCutOff != entry.m_bCachedCutOff)
+			if (entry.m_bCutOff != entry.m_bCachedCutOff)
 				dirty = true;
-			entry.m_iCachedCollision = entry.m_iCollision;
 			entry.m_bCachedCutOff = entry.m_bCutOff;
 		}
 
@@ -2116,10 +2146,7 @@ modded class SCR_VONController
 		{
 			VONSave.StartObject(container.m_iCachedClientId.ToString());
 			if (m_bPluginImmersion)
-			{
-				VONSave.WriteValue("Collision", container.m_iCollision);
 				VONSave.WriteValue("CutOff", container.m_bCutOff);
-			}
 			VONSave.SetMaxDecimalPlaces(3);
 			VONSave.WriteValue("VONType", container.m_iCachedType);
 			VONSave.WriteValue("Frequency", container.m_sCachedFreq);
@@ -2202,14 +2229,10 @@ modded class SCR_VONController
 		int count = 0;
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
-			// bit0 SameLanguage, bit1 collision captured, bit2 collision lost, bit3 cut off (older plugins only read bit0)
+			// bit0 SameLanguage, bits 1-2 reserved, bit3 cut off (older plugins only read bit0)
 			int entryFlags = 0;
 			if (container.m_bCachedSameLang)
 				entryFlags = 1;
-			if (container.m_iCollision == COLLISION_CAPTURED)
-				entryFlags = entryFlags | 2;
-			else if (container.m_iCollision == COLLISION_LOST)
-				entryFlags = entryFlags | 4;
 			if (container.m_bCutOff)
 				entryFlags = entryFlags | 8;
 			int muffled = container.m_iCachedDecibels;

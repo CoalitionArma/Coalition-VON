@@ -440,14 +440,9 @@ typedef struct {
     float         muffledDb;
     float         behindIntensity;
     int           sameLanguage;
-    int           collision;       /* COLLISION_*: another transmission on the same net at once */
     int           cutOff;          /* the sender was killed or knocked out mid-transmission */
     unsigned long lastUpdateTick;
 } VonEntry;
-
-#define COLLISION_NONE 0
-#define COLLISION_CAPTURED 1 /* strongest on the net: heard, with a heterodyne squeal */
-#define COLLISION_LOST 2     /* a weaker one: almost nothing gets through */
 
 /* -------- Double-buffered snapshots -------- */
 typedef struct {
@@ -713,8 +708,6 @@ typedef struct {
     Biquad         lp_n, hp_n;   /* static filters */
     PinkNoise      pink;
     RingMod        rm;
-    float          hetPhase;     /* collision squeal: carrier and its slow wobble */
-    float          hetWobble;
 } RadioState;
 
 static RadioState       g_radioStates[STATE_TABLE_SIZE];
@@ -886,45 +879,6 @@ static void radio_color_voice_only(RadioState* st, float* buf, int n, float volu
             buf[i] = 1.0f;
         if (buf[i] < -1.0f)
             buf[i] = -1.0f;
-    }
-}
-
-/* ---------------------------------------------------------------------------
-   Collisions: two transmissions on one net at once. As on an FM radio the strongest captures the receiver
-   and is heard with a heterodyne squeal and more static; the weaker ones are almost entirely lost. The game
-   decides which is which (VonEntry.collision).
---------------------------------------------------------------------------- */
-#define COLLISION_CAPTURED_QUALITY 0.75f /* signal quality multiplier for the one that's heard */
-#define COLLISION_LOST_QUALITY 0.3f
-#define COLLISION_LOST_VOICE 0.12f       /* what's left of a lost transmission's voice */
-#define HETERODYNE_LEVEL 0.10f
-#define HETERODYNE_HZ 1100.0f
-#define HETERODYNE_SWING_HZ 450.0f       /* the carrier beat drifts up and down by this much */
-#define HETERODYNE_WOBBLE_HZ 0.6f
-
-static inline void collision_adjust(const VonEntry* e, float* quality, float* voiceMul)
-{
-    if (e->collision == COLLISION_CAPTURED) {
-        *quality *= COLLISION_CAPTURED_QUALITY;
-    } else if (e->collision == COLLISION_LOST) {
-        *quality *= COLLISION_LOST_QUALITY;
-        *voiceMul *= COLLISION_LOST_VOICE;
-    }
-}
-
-/* Adds the squeal of two carriers beating against each other (captured transmissions only) */
-static void collision_heterodyne(RadioState* st, const VonEntry* e, float* buf, int n)
-{
-    if (e->collision != COLLISION_CAPTURED)
-        return;
-    const float wobbleStep = TWO_PI_F * HETERODYNE_WOBBLE_HZ / TS_SAMPLE_RATE;
-    for (int i = 0; i < n; ++i) {
-        st->hetWobble = wrap_pi(st->hetWobble + wobbleStep);
-        const float hz = HETERODYNE_HZ + HETERODYNE_SWING_HZ * fast_sinf(st->hetWobble);
-        st->hetPhase   = wrap_pi(st->hetPhase + TWO_PI_F * hz / TS_SAMPLE_RATE);
-        /* A little amplitude flutter so it doesn't sound like a test tone */
-        const float flutter = 0.75f + 0.25f * fast_sinf(st->hetWobble * 7.0f);
-        buf[i] += HETERODYNE_LEVEL * flutter * fast_sinf(st->hetPhase);
     }
 }
 
@@ -1514,9 +1468,7 @@ static void apply_speaker_dsp(anyID clientID, const VonEntry* e, short* samples,
 
     RadioState* st = get_radio_state(clientID);
     if (st) {
-        float q        = clampf(e->connQ, 0.0f, 1.0f);
-        float voiceMul = 1.0f;
-        collision_adjust(e, &q, &voiceMul);
+        float q       = clampf(e->connQ, 0.0f, 1.0f);
         int processed = 0;
         while (processed < sampleCount) {
             int n = sampleCount - processed;
@@ -1535,9 +1487,6 @@ static void apply_speaker_dsp(anyID clientID, const VonEntry* e, short* samples,
             }
 
             radio_color_voice_only(st, voice, n, 1.0f, q);
-            for (int i = 0; i < n; ++i)
-                voice[i] *= voiceMul;
-            collision_heterodyne(st, e, voice, n);
             radio_make_static(st, hiss, n, q, q);
 
             for (int i = 0; i < n; ++i) {
@@ -1651,9 +1600,6 @@ static int load_von_into(VonSnapshot* dst)
         else
             e.sameLanguage = 1; /* default to same language if not specified */
 
-        v = cJSON_GetObjectItem(it, "Collision");
-        if (cJSON_IsNumber(v) && v->valueint >= COLLISION_NONE && v->valueint <= COLLISION_LOST)
-            e.collision = v->valueint;
         v = cJSON_GetObjectItem(it, "CutOff");
         e.cutOff = cJSON_IsTrue(v) ? 1 : 0;
 
@@ -1685,8 +1631,8 @@ static int load_von_into(VonSnapshot* dst)
               w2 seq u32
               w3 entryCount u16 | entryWords u16
               w4 stringCount u16 | reserved u16
-     Entry    e0 tsClientId u16 | VONType u8 | flags u8 (bit0 = SameLanguage, bit1 = collision captured,
-                                                         bit2 = collision lost, bit3 = cut off)
+     Entry    e0 tsClientId u16 | VONType u8 | flags u8 (bit0 = SameLanguage, bits 1-2 reserved,
+                                                         bit3 = cut off)
               e1 leftGain u16 (x10000) | rightGain u16 (x10000)
               e2 frequency string index u16 | faction string index u16 (0xFFFF = none)
               e3 timeDeviation i32 (0x7FFFFFFF = not sent)
@@ -1778,7 +1724,6 @@ static int load_von_bin_into(VonSnapshot* dst)
             continue;
         v.type         = von_type_from_int((int)((e0 >> 16) & 0xFF));
         v.sameLanguage = (e0 >> 24) & 1;
-        v.collision    = ((e0 >> 25) & 1) ? COLLISION_CAPTURED : (((e0 >> 26) & 1) ? COLLISION_LOST : COLLISION_NONE);
         v.cutOff       = (e0 >> 27) & 1;
         v.leftGain     = (float)(e1 & 0xFFFF) / 10000.0f;
         v.rightGain    = (float)((e1 >> 16) & 0xFFFF) / 10000.0f;
@@ -2794,8 +2739,8 @@ static void reload_radio_if_changed(void)
 --------------------------------------------------------------------------- */
 /* gamemix1: reads RadioMix / GameAudio (VONData.bin flags bits 1-2, or the JSON keys) and mixes game
    audio into radio transmissions.
-   immersion1: reads SquelchTones (flags bit 3) and per entry the
-   collision and cut-off flags (entry flags bits 1-3), or the matching JSON keys */
+   immersion1: reads SquelchTones (flags bit 3) and per entry the cut-off flag (entry flags bit 3), or the
+   matching JSON keys */
 #define PLUGIN_FEATURES "bin1|talking1|heartbeat1|comms1|gamemix1|immersion1"
 #define MAX_TALKING 256
 
@@ -3746,8 +3691,6 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
 
         if (matched) {
             float q        = clampf(e->connQ, 0.0f, 1.0f);
-            float voiceMul = 1.0f;
-            collision_adjust(e, &q, &voiceMul);
             RadioState* st = get_radio_state(clientID);
             if (!st || samples_all_zero(samples, sampleCount * channels))
                 return; /* state table full, or a silent buffer: nothing to colour */
@@ -3783,10 +3726,9 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
 
                 radio_color_voice_only(st, voice, n, vol01, q);
 
-                const float voiceGain = clampf(vol01, 0.0f, 1.0f) * voiceMul; // quality affects FX/noise, not loudness
+                const float voiceGain = clampf(vol01, 0.0f, 1.0f); // quality affects FX/noise, not loudness
                 for (int i = 0; i < n; ++i)
                     voice[i] *= voiceGain;
-                collision_heterodyne(st, e, voice, n);
 
                 radio_make_static(st, hiss, n, q, q);
 

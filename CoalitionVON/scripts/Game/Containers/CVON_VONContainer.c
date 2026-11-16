@@ -89,9 +89,6 @@ class CVON_VONContainer
 	float m_fNextTerrainTime = 0;
 	vector m_vTerrainFrom;
 	vector m_vTerrainTo;
-	// Another transmission on the same frequency at the same time: COLLISION_* (CVON_SCR_VONController)
-	int m_iCollision = 0;
-	int m_iCachedCollision = 0;
 	// The sender was killed or knocked out mid-transmission: kept a moment so the plugin plays the cut-off
 	bool m_bCutOff = false;
 	bool m_bCachedCutOff = false;

@@ -83,12 +83,16 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 	//The server settings in force, replicated to every client (ApplyServerSettings)
 	static const int SETTING_TERRAIN = 1;
-	static const int SETTING_COLLISIONS = 2;
+	static const int SETTING_HALF_DUPLEX = 2;
 	static const int SETTING_SQUELCH = 4;
 	static const int SETTING_CUT_OFF = 8;
-	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_COLLISIONS | SETTING_SQUELCH | SETTING_CUT_OFF;
+	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_HALF_DUPLEX | SETTING_SQUELCH | SETTING_CUT_OFF;
 	[RplProp()] protected float m_fTerrainBlockStrength = 1;
 	[RplProp()] protected int m_iRadioGameAudioEnforcement = CVON_ESettingEnforcement.PLAYER_CHOICE;
+	//Replicated so clients only report their talking (SetSpeakingForAI) while it's on
+	[RplProp()] protected float m_fAIHearing = 0;
+	//Server only, while AI hearing is on
+	protected ref CVON_AIHearing m_AIHearing;
 
 	//Wow a pointer, so performant
 	static CVON_VONGameModeComponent m_Instance;
@@ -140,8 +144,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		int flags = 0;
 		if (settings.m_bTerrainBlocksRadio && settings.m_fTerrainBlockStrength > 0)
 			flags |= SETTING_TERRAIN;
-		if (settings.m_bRadioCollisions)
-			flags |= SETTING_COLLISIONS;
+		if (settings.m_eRadioDuplex != CVON_ERadioDuplex.FULL)
+			flags |= SETTING_HALF_DUPLEX;
 		if (settings.m_bSquelchTones)
 			flags |= SETTING_SQUELCH;
 		if (settings.m_bTransmissionCutOff)
@@ -150,7 +154,27 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		m_iServerSettingFlags = flags;
 		m_fTerrainBlockStrength = Math.Clamp(settings.m_fTerrainBlockStrength, 0, 2);
 		m_iRadioGameAudioEnforcement = settings.m_eRadioGameAudio;
+		m_fAIHearing = Math.Clamp(settings.m_fAIHearing, 0, 1);
+		if (m_fAIHearing > 0 && !m_AIHearing)
+			m_AIHearing = new CVON_AIHearing();
+		if (m_AIHearing)
+			m_AIHearing.SetStrength(m_fAIHearing);
 		Replication.BumpMe();
+	}
+
+	//How keenly enemy AI hear players talking; 0 = off (CVON_AIHearing)
+	//==========================================================================================================================================================================
+	float GetAIHearing()
+	{
+		return m_fAIHearing;
+	}
+
+	//Server: a player started or stopped talking (SCR_PlayerController.SetSpeakingForAI)
+	//==========================================================================================================================================================================
+	void SetPlayerSpeakingForAI(int playerId, bool speaking)
+	{
+		if (m_AIHearing)
+			m_AIHearing.SetSpeaking(playerId, speaking);
 	}
 
 	//==========================================================================================================================================================================
@@ -193,6 +217,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			RemoveLocalVONBroadcasts(playerId);
 			RemoveFromFrequencyIndex(playerId);
 			StopRadioListeningFor(playerId);
+			if (m_AIHearing)
+				m_AIHearing.OnPlayerLeft(playerId);
 		}
 		if (m_PlayerFreqArray.Contains(playerId))
 			m_PlayerFreqArray.Remove(playerId);

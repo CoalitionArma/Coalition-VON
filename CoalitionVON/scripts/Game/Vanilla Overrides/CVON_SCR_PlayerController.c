@@ -608,6 +608,23 @@ modded class SCR_PlayerController
 		CVON_VONGameModeComponent.GetInstance().CutOffLocalVONBroadcasts(playerIdToRemove);
 	}
 
+	//AI hearing: this player started or stopped talking (any speech: direct, radio, intercom - their mouth is
+	//where it comes from). Only sent while the server has AI hearing on (CVON_AIHearing).
+	//==========================================================================================================================================================================
+	void SetSpeakingForAI(bool speaking)
+	{
+		Rpc(RpcAsk_SetSpeakingForAI, speaking);
+	}
+
+	//==========================================================================================================================================================================
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcAsk_SetSpeakingForAI(bool speaking)
+	{
+		CVON_VONGameModeComponent gameMode = CVON_VONGameModeComponent.GetInstance();
+		if (gameMode)
+			gameMode.SetPlayerSpeakingForAI(GetPlayerId(), speaking);
+	}
+
 	//Server -> receiver: sent just before the usual remove
 	//==========================================================================================================================================================================
 	void CutOffLocalVONBroadcast(int playerIdToRemove)

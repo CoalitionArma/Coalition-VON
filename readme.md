@@ -69,9 +69,10 @@ Server admins set CVON's gameplay settings in the Arma Reforger server config, t
         "m_eRadioGameAudio": 0,
         "m_bTerrainBlocksRadio": true,
         "m_fTerrainBlockStrength": 1.0,
-        "m_bRadioCollisions": true,
+        "m_eRadioDuplex": 0,
         "m_bSquelchTones": true,
-        "m_bTransmissionCutOff": true
+        "m_bTransmissionCutOff": true,
+        "m_fAIHearing": 0.0
     }
 }
 ```
@@ -81,9 +82,10 @@ Server admins set CVON's gameplay settings in the Arma Reforger server config, t
 | `m_eRadioGameAudio` | int, `0` | Mixing game audio into radio transmissions. `0`: each player's own setting (settings menu, **Coalition VON** tab). `1`: on for everyone. `2`: off for everyone. Players see the server's choice, greyed out, on that tab. |
 | `m_bTerrainBlocksRadio` | bool, `true` | Hills and mountains between sender and receiver weaken radio signals. |
 | `m_fTerrainBlockStrength` | float 0–2, `1.0` | How much terrain weakens them: `0` none, `1` normal, `2` double. |
-| `m_bRadioCollisions` | bool, `true` | Two players transmitting on the same net at once step on each other. The stronger signal is heard with a squeal, and the weaker is lost. |
+| `m_eRadioDuplex` | int, `0` | `0`: half duplex. One transmission at a time: a radio that's receiving someone won't transmit (the player hears an error tone and presses again once the channel is clear), and while a player transmits they don't hear anything else on that frequency. People standing next to them are still heard directly. `1`: full duplex. Players can transmit over each other and hear the frequency while they transmit. |
 | `m_bSquelchTones` | bool, `true` | Listeners hear a squelch burst when a transmission opens and a squelch tail when it closes. |
 | `m_bTransmissionCutOff` | bool, `true` | A radio operator killed or knocked out mid-transmission is cut off with a burst of static. |
+| `m_fAIHearing` | float 0–1, `0.0` | Enemy AI can hear players talking. `0`: off. `1`: any enemy AI within your voice range hears you almost as soon as you speak, walls or not. In between, AI close by are likelier to hear you than AI near the edge of your voice range, and walls make it less likely; both matter less the higher the value. AI that hear you turn toward you, and their group knows roughly where you are. It covers all talking, including radio calls, since those come out of your mouth too. Has no effect in PvP. |
 
 - **One source at a time:** CVON reads the whole object from one place, as ACE does. A field left out of the server config takes the default above, not the mission's value. Without `m_CVON_Settings` in the server config, the mission's own settings apply (`m_MissionSettings` on the world's `CVON_VONGameModeComponent`), and the defaults apply without either.
 - **Read once:** the server reads it from the first mission it loads, as ACE does. Later scenario changes keep using it, because their mission headers don't carry the server config's overrides. Restart the server after changing it.
@@ -129,13 +131,15 @@ While a player talks on a radio, the plugin mixes what their game is playing (gu
 Each feature has a server setting (see "CVON server settings"). When the server turns one off, the game stops sending its data, so the plugin plays nothing for it.
 
 - **Terrain** (`ComputeTerrainFactor` in CVON_SCR_VONController.c): the listener's game samples the terrain height every 25 m along the path between the two radios, about 1.6 m above each. The highest ridge above that line costs up to 60 % of the signal, each further ridge 15 %, and the share of the path in shadow up to 25 %, scaled by `m_fTerrainBlockStrength`. It multiplies the distance-based `ConnectionQuality`, which the plugin already turns into static. It uses height lookups, not traces, and each talker is recomputed once a second or when either end moves 25 m. A helicopter or a hilltop operator clears the hills on their own.
-- **Collisions** (`UpdateCollisions`): the listener's game groups radio and speaker entries by frequency, time deviation and key. Where two or more transmit at once, the strongest signal is marked captured and the others lost. The plugin plays a captured transmission with a drifting heterodyne squeal and a quarter less quality, and drops a lost one to about a tenth of its voice in heavy static (`COLLISION_*` / `HETERODYNE_*` defines).
+- **Half duplex** (`IsBlockedByOwnTransmission` in CVON_SCR_VONController.c): while the player transmits on a radio, their game blanks the frequency of incoming radio entries on that frequency. The plugin then finds no radio for them and plays them as direct speech at their direct gains, so only a sender close by is heard. Speaker entries aren't affected: the vehicle's radio is a different radio. Busy channel lockout (`IsChannelBusy`): when the player keys a radio, their game looks for a radio entry on the same frequency, time deviation and key that reaches them (signal above zero after distance and terrain). If there is one, the radio doesn't key and the player hears vanilla's radio error sound; holding the key doesn't key it later, they press again. Two players keying within the same moment can both get through, since neither game has the other's transmission yet. Nothing changes in the plugin.
 - **Squelch** (`update_squelch_events`, `squelch_render` in plugin.c): the plugin watches for radio talkers that one of the player's radios receives starting and stopping. It plays a short squelch burst on open and a squelch tail on close, longer and louder for weak signals, panned to that radio's ear at its volume. They're added in TeamSpeak's mixed playback callback, so a tail can play after the talker's own audio has ended.
 - **Cut-off**: a sender whose character stops being alive mid-transmission sends a cut-off (`BroadcastCutOffLocalVONToServer`) instead of the normal release. The server tells each receiver (`CutOffLocalVONBroadcast`), then ends the transmission as usual, so `RemoveLocalVONBroadcasts` and anything hooked on it still run. Each receiver keeps the entry 0.5 s marked as cut off, and its plugin silences the talker and plays a burst of crackling static instead of the squelch tail.
 
+- **AI hearing** (`CVON_AIHearing`, server only): each player's game watches the plugin's talking list, which includes the player's own TeamSpeak client, and tells the server when they start and stop talking (`SetSpeakingForAI`), only while `m_fAIHearing` is above 0. Every 0.5 s the server checks enemy AI within each talker's voice range (the same range players hear, from their voice volume setting). With `s` = `m_fAIHearing`, the chance of being heard each check is `s × (1 − (1 − s) × (distance / range)²)`, times `0.35 + 0.65 × s` with something solid in between, so at 1 it's certain anywhere in range. An AI that hears the talker looks toward them (`SCR_AILookAction`, danger priority), and its group gets them as a heard, not seen, target (`SCR_AIGroupPerception.AddOrUpdateGunshot`, not endangering). The same AI can't hear the same player again for 15 s. Players on plugins without `talking1` aren't heard by AI.
+
 Format, all in fields older plugins ignore:
-- **`VONData.bin`:** header flags bit 3 `SquelchTones`; entry flags bit 1 collision captured, bit 2 collision lost, bit 3 cut off.
-- **`VONData.json`:** top-level `SquelchTones`; per entry `Collision` (0 none, 1 captured, 2 lost) and `CutOff`.
+- **`VONData.bin`:** header flags bit 3 `SquelchTones`; entry flags bit 3 cut off (bits 1–2 reserved).
+- **`VONData.json`:** top-level `SquelchTones`; per entry `CutOff`.
 
 # Vehicle radios and intercom
 
