@@ -14,3 +14,7 @@
 //! This ensures that the code is compiled only when the flag is set. If it's not, which it won't be if this mod is not loaded, it will ignore that code as if it never existed.
 
 #define CVON_COALITION_VON
+
+//! Listening to another player's radios: SCR_PlayerController.SetRadioListenTarget / GetRadioListenTarget,
+//! CVON_VONGameModeComponent.CanListenToRadios (override it to allow someone)
+#define CVON_RADIO_LISTEN
