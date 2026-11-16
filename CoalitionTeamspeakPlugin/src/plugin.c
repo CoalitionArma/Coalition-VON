@@ -66,6 +66,7 @@ typedef uint16_t anyID;
 #include "plugin.h"
 #include "cJSON.h"
 #include "cvon_gameaudio.h"
+#include "cvon_version.h"
 #include "teamspeak/public_definitions.h"
 #include "teamspeak/public_errors.h"
 #include "teamspeak/public_errors_rare.h"
@@ -2912,7 +2913,7 @@ PLUGINS_EXPORTDLL const char* ts3plugin_name()
 }
 PLUGINS_EXPORTDLL const char* ts3plugin_version()
 {
-    return "3.0.1";
+    return CVON_VERSION_STRING;
 }
 PLUGINS_EXPORTDLL int ts3plugin_apiVersion()
 {
@@ -3119,10 +3120,56 @@ static char* dup_text(const char* text)
     return out;
 }
 
+/* Channel panel: how many players run each plugin version */
+#define INFO_MAX_VERSIONS 8
+#define INFO_MAX_OUTDATED_NAMES 12
+
+typedef struct {
+    char version[32];
+    int  count;
+} VersionTally;
+
+static void tally_version(VersionTally* tally, int* tallyCount, const char* version)
+{
+    /* Once all but one slot are used, the last slot collects every further version as "other" */
+    const char* v = version[0] ? version : "?";
+    for (int i = 0; i < *tallyCount; ++i) {
+        if (strcmp(tally[i].version, v) == 0) {
+            tally[i].count++;
+            return;
+        }
+    }
+    int slot;
+    if (*tallyCount < INFO_MAX_VERSIONS - 1) {
+        slot = (*tallyCount)++;
+    } else {
+        slot = INFO_MAX_VERSIONS - 1;
+        v    = "other";
+        if (*tallyCount < INFO_MAX_VERSIONS)
+            (*tallyCount)++;
+    }
+    _snprintf(tally[slot].version, sizeof(tally[slot].version), "%s", v);
+    tally[slot].version[sizeof(tally[slot].version) - 1] = '\0';
+    tally[slot].count++;
+}
+
+/* Appends printf-style text to buf (size cap), never overflowing */
+static void append_text(char* buf, size_t cap, const char* fmt, ...)
+{
+    const size_t used = strlen(buf);
+    if (used + 1 >= cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnprintf(buf + used, cap - used - 1, fmt, ap);
+    va_end(ap);
+    buf[cap - 1] = '\0';
+}
+
 PLUGINS_EXPORTDLL void ts3plugin_infoData(uint64 sch, uint64 id, enum PluginItemType type, char** data)
 {
     *data = NULL;
-    char text[512];
+    char text[2048];
 
     if (type == PLUGIN_CLIENT) {
         char* meta = NULL;
@@ -3146,7 +3193,12 @@ PLUGINS_EXPORTDLL void ts3plugin_infoData(uint64 sch, uint64 id, enum PluginItem
         anyID* clients = NULL;
         if (ts3Functions.getChannelClientList(sch, id, &clients) != ERROR_ok || !clients)
             return;
-        int total = 0, withPlugin = 0, inGame = 0;
+        int          total = 0, withPlugin = 0, inGame = 0, outdated = 0;
+        VersionTally tally[INFO_MAX_VERSIONS];
+        int          tallyCount = 0;
+        char         names[768];
+        memset(tally, 0, sizeof(tally));
+        names[0] = '\0';
         for (int i = 0; clients[i]; ++i) {
             ++total;
             char* meta = NULL;
@@ -3157,6 +3209,19 @@ PLUGINS_EXPORTDLL void ts3plugin_infoData(uint64 sch, uint64 id, enum PluginItem
                     ++withPlugin;
                     if (state >= CVON_STATE_IN_GAME)
                         ++inGame;
+                    tally_version(tally, &tallyCount, version);
+
+                    /* Players on another version than this plugin, by name */
+                    if (strcmp(version, ts3plugin_version()) != 0) {
+                        if (outdated < INFO_MAX_OUTDATED_NAMES) {
+                            char* nick = NULL;
+                            if (ts3Functions.getClientVariableAsString(sch, clients[i], CLIENT_NICKNAME, &nick) == ERROR_ok && nick) {
+                                append_text(names, sizeof(names), "\n  %s (v%s)", nick, version[0] ? version : "?");
+                                ts3Functions.freeMemory(nick);
+                            }
+                        }
+                        ++outdated;
+                    }
                 }
                 ts3Functions.freeMemory(meta);
             }
@@ -3165,6 +3230,14 @@ PLUGINS_EXPORTDLL void ts3plugin_infoData(uint64 sch, uint64 id, enum PluginItem
         if (total == 0)
             return;
         _snprintf(text, sizeof(text), "%d of %d have the plugin\n%d in game", withPlugin, total, inGame);
+        text[sizeof(text) - 1] = '\0';
+        for (int i = 0; i < tallyCount; ++i)
+            append_text(text, sizeof(text), "\nv%s: %d", tally[i].version, tally[i].count);
+        if (outdated > 0) {
+            append_text(text, sizeof(text), "\n[color=#c93636]Not on v%s: %d[/color]%s", ts3plugin_version(), outdated, names);
+            if (outdated > INFO_MAX_OUTDATED_NAMES)
+                append_text(text, sizeof(text), "\n  ... and %d more", outdated - INFO_MAX_OUTDATED_NAMES);
+        }
     } else {
         return;
     }
