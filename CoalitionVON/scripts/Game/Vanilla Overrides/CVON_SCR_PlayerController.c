@@ -319,7 +319,7 @@ modded class SCR_PlayerController
 		radio.KeyFillFromCrew(player);
 	}
 
-	//Only the crew (vehicle radio) or the carrier (manpack) can turn the speaker on or off
+	//Only the crew (vehicle radio) or the carrier (manpack, handheld) can turn the speaker on or off
 	//==========================================================================================================================================================================
 	void ToggleVehicleSpeaker(RplId radioId)
 	{
@@ -333,7 +333,7 @@ modded class SCR_PlayerController
 		if (!radio || !radio.CanUseSpeaker())
 			return;
 
-		//Vehicle radio: crew only. Manpack: its carrier only.
+		//Vehicle radio: crew only. Carried radio: its carrier only.
 		IEntity player = GetControlledEntity();
 		CVON_VehicleRadioComponent vehicleRadio = CVON_VehicleRadioComponent.Cast(radio);
 		if (vehicleRadio)

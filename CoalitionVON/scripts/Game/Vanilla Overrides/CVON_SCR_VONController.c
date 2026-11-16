@@ -237,8 +237,9 @@ modded class SCR_VONController
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
 	}
 
-	//Keybind: turn a radio speaker on or off. In a vehicle crew seat, the vehicle radio's; otherwise our own
-	//manpack's, so everyone around us hears the net.
+	//Keybind: turn a radio speaker on or off. In a vehicle crew seat, the vehicle radio's; otherwise our
+	//active radio's (handhelds while the server allows it), else our manpack's, so everyone around us
+	//hears the net.
 	//==========================================================================================================================================================================
 	void ToggleVehicleSpeaker()
 	{
@@ -246,6 +247,13 @@ modded class SCR_VONController
 			return;
 
 		CVON_RadioComponent radio = CVON_VehicleComms.GetOperatedRadio(m_Player);
+		if ((!radio || !radio.CanUseSpeaker()) && m_PlayerController.m_aRadios.Count() > 0 && m_PlayerController.m_aRadios.Get(0))
+		{
+			radio = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+			// Someone else's (a held handset) isn't ours to switch
+			if (radio && radio.GetCarrier() != m_Player)
+				radio = null;
+		}
 		if (!radio || !radio.CanUseSpeaker())
 			radio = CVON_Manpack.GetManpackRadio(m_Player);
 		if (!radio || !radio.CanUseSpeaker())

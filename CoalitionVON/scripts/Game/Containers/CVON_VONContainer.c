@@ -58,7 +58,7 @@ class CVON_VONContainer
 	// Vehicle comms, worked out by the listener (not replicated)
 	// The talker is on the same vehicle intercom as us: written as INTERCOM whatever m_eVonType is
 	bool m_bOnIntercom = false;
-	// SPEAKER: the vehicle whose speaker plays this transmission, and how far it carries
+	// SPEAKER: the radio whose speaker plays this transmission (a vehicle's, a carried or dropped radio), and how far it carries
 	RplId m_SpeakerRplId = RplId.Invalid();
 	int m_iSpeakerRange;
 	IEntity m_SpeakerEntity;

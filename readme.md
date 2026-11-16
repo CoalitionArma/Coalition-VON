@@ -72,6 +72,8 @@ Server admins set CVON's gameplay settings in the Arma Reforger server config, t
         "m_eRadioDuplex": 0,
         "m_bSquelchTones": true,
         "m_bTransmissionCutOff": true,
+        "m_bHandheldSpeakers": true,
+        "m_bDroppedRadiosTransmit": true,
         "m_fAIHearing": 0.0
     }
 }
@@ -85,6 +87,8 @@ Server admins set CVON's gameplay settings in the Arma Reforger server config, t
 | `m_eRadioDuplex` | int, `0` | `0`: half duplex. One transmission at a time: a radio that's receiving someone won't transmit (the player hears an error tone and presses again once the channel is clear), and while a player transmits they don't hear anything else on that frequency. People standing next to them are still heard directly. `1`: full duplex. Players can transmit over each other and hear the frequency while they transmit. |
 | `m_bSquelchTones` | bool, `true` | Listeners hear a squelch burst when a transmission opens and a squelch tail when it closes. |
 | `m_bTransmissionCutOff` | bool, `true` | A radio operator killed or knocked out mid-transmission is cut off with a burst of static. |
+| `m_bHandheldSpeakers` | bool, `true` | Players can put a handheld radio they carry on speaker ("Toggle Radio Speaker" keybind), so people around them hear its traffic. Manpack and vehicle speakers work either way. |
+| `m_bDroppedRadiosTransmit` | bool, `true` | A radio dropped on the ground, while switched on, keeps playing its traffic out loud for anyone nearby. |
 | `m_fAIHearing` | float 0–1, `0.0` | Enemy AI can hear players talking. `0`: off. `1`: any enemy AI within your voice range hears you almost as soon as you speak, walls or not. In between, AI close by are likelier to hear you than AI near the edge of your voice range, and walls make it less likely; both matter less the higher the value. AI that hear you turn toward you, and their group knows roughly where you are. It covers all talking, including radio calls, since those come out of your mouth too. Has no effect in PvP. |
 
 - **One source at a time:** CVON reads the whole object from one place, as ACE does. A field left out of the server config takes the default above, not the mission's value. Without `m_CVON_Settings` in the server config, the mission's own settings apply (`m_MissionSettings` on the world's `CVON_VONGameModeComponent`), and the defaults apply without either.
@@ -113,7 +117,7 @@ Each entry in `VONData` has a `VONType`:
 | 0 Direct | Proximity voice | Positioned by the game's left/right gains; muffle and behind-the-head filters |
 | 1 Radio | Radio transmission | Radio chain if one of the player's radios matches, otherwise direct |
 | 2 Intercom | Talker on the player's vehicle intercom (the listener's game decides this) | Clear, centred, telephone band |
-| 3 Speaker | Radio traffic heard through a nearby vehicle's speaker | Radio chain, then positioned at the vehicle like direct |
+| 3 Speaker | Radio traffic heard through a nearby radio's speaker (a vehicle's, a carried radio on speaker, a dropped radio) | Radio chain, then positioned at that radio like direct |
 
 Plugins before 3.0 play types 2 and 3 as direct speech.
 
@@ -157,4 +161,10 @@ Format, all in fields older plugins ignore:
 A manpack is a long-range CVON radio carried by someone wearing a radio backpack (any backpack with a radio component, e.g. the CRF's inert R-107M / AN/PRC-77 / PRC-351 backpacks). Set `m_bManpackNeedsRadioBackpack` off on `CVON_VONGameModeComponent` to make any carried long-range radio count.
 
 - **Handset:** stand behind the radio operator and use "Grab Handset" (the "Back" interaction on characters). While you hold it, their radio is on your radio keys after your own radios: you hear its net and can transmit on it. Use "Return Handset" to give it back. Only one person holds it at a time; the server takes it back if you move more than 3 m from the operator (`CVON_Manpack.HANDSET_CORD_LENGTH`), die, or the radio stops being a manpack.
-- **Speaker:** the operator turns the manpack's speaker on or off with the "Toggle Radio Speaker" keybind (Left Ctrl + End, when not in a vehicle crew seat). Its traffic then plays in 3D from the operator for anyone within `m_iSpeakerRange` (15 m by default) who doesn't have the frequency themselves.
+- **Speaker:** the operator turns the manpack's speaker on or off with the "Toggle Radio Speaker" keybind (Left Ctrl + End, when not in a vehicle crew seat). Its traffic then plays in 3D from the operator for anyone within `m_iSpeakerRange` (15 m by default) who doesn't have the frequency themselves. With handheld speakers on (below), the keybind switches the active radio's speaker, so make the manpack the active radio first.
+
+# Handheld speakers and dropped radios
+
+- **Handheld speakers** (server setting `m_bHandheldSpeakers`): "Toggle Radio Speaker" (Left Ctrl + End, when not in a vehicle crew seat) puts the player's active radio on speaker, handheld or manpack. Its traffic then plays in 3D from the player for anyone nearby who doesn't have the frequency themselves; the player keeps hearing it in their headset. A handheld's speaker fades out over `CVON_RadioComponent.HANDHELD_SPEAKER_RANGE` (8 m), or the radio's `m_iSpeakerRange` if that's smaller. With the setting off, the keybind only reaches manpacks, as before.
+- **Dropped radios** (server setting `m_bDroppedRadiosTransmit`): a switched-on radio lying on the ground plays its traffic out loud from where it lies, up to 8 m, whether or not its speaker was on. Turn it off before dropping it to keep it quiet. Only radios someone has carried count (they have a key fill), so spares that were never handed out stay silent, and a radio inside a backpack, crate or vehicle doesn't play.
+- **How:** every radio registers with the gamemode when it gets its key fill (`InitializeForFaction`). `BroadcastToSpeakers` checks each one's frequency, then `HasActiveSpeaker` (`IsDropped`: no parent entity and a key fill), and sends nearby players the usual speaker entry. Listeners need no new plugin.

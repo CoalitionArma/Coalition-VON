@@ -1,5 +1,6 @@
 //Also the VONType the plugin reads. INTERCOM is only ever written by the listener (a talker on their
-//vehicle intercom); SPEAKER is a radio transmission heard through a nearby vehicle's speaker.
+//vehicle intercom); SPEAKER is a radio transmission heard through a nearby radio's speaker (a vehicle's,
+//a carried radio with its speaker on, a dropped radio).
 enum CVON_EVONType
 {
 	DIRECT,
@@ -48,8 +49,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	protected ref map<int, ref CVON_VONContainer> m_mActiveBroadcasts = new map<int, ref CVON_VONContainer>();
 	protected ref map<int, float> m_mActiveBroadcastRange = new map<int, float>();
 
-	// Server: radios with a speaker (vehicle radios, manpacks whose speaker was turned on), so a transmission
-	// can find the speakers tuned to its frequency
+	// Server: radios that can play out loud (vehicle radios, and every carried radio once it has a key fill:
+	// its speaker may be turned on, or it may be dropped), so a transmission can find the speakers tuned to
+	// its frequency
 	ref array<CVON_RadioComponent> m_aSpeakerRadios = {};
 
 	// Server: radios whose handset someone is holding, so the holder's radios can include it
@@ -86,7 +88,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	static const int SETTING_HALF_DUPLEX = 2;
 	static const int SETTING_SQUELCH = 4;
 	static const int SETTING_CUT_OFF = 8;
-	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_HALF_DUPLEX | SETTING_SQUELCH | SETTING_CUT_OFF;
+	static const int SETTING_HANDHELD_SPEAKERS = 16;
+	static const int SETTING_DROPPED_RADIOS = 32;
+	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_HALF_DUPLEX | SETTING_SQUELCH | SETTING_CUT_OFF | SETTING_HANDHELD_SPEAKERS | SETTING_DROPPED_RADIOS;
 	[RplProp()] protected float m_fTerrainBlockStrength = 1;
 	[RplProp()] protected int m_iRadioGameAudioEnforcement = CVON_ESettingEnforcement.PLAYER_CHOICE;
 	//Replicated so clients only report their talking (SetSpeakingForAI) while it's on
@@ -150,6 +154,10 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			flags |= SETTING_SQUELCH;
 		if (settings.m_bTransmissionCutOff)
 			flags |= SETTING_CUT_OFF;
+		if (settings.m_bHandheldSpeakers)
+			flags |= SETTING_HANDHELD_SPEAKERS;
+		if (settings.m_bDroppedRadiosTransmit)
+			flags |= SETTING_DROPPED_RADIOS;
 
 		m_iServerSettingFlags = flags;
 		m_fTerrainBlockStrength = Math.Clamp(settings.m_fTerrainBlockStrength, 0, 2);
@@ -427,10 +435,11 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			BroadcastToSpeakers(VONContainer, playerIdToAdd, radioId, senderOrigin, maxDist, receivers, gamemode.IsEncryptionEnabled());
 	}
 
-	//Vehicle speakers: players near a vehicle whose radio is on the transmission's frequency hear it from
-	//the vehicle, unless they already have it on a radio of their own. Each player gets their nearest
-	//speaker (one voice per talker); a listener also near the sender hears whichever of the speaker and the
-	//sender's own voice is louder for them (worked out on their client, see SCR_VONController.WriteJSON).
+	//Speakers: players near a radio playing out loud (a vehicle's, a carried radio with its speaker on, a
+	//dropped radio) on the transmission's frequency hear it from that radio, unless they already have it on
+	//a radio of their own. Each player gets their nearest speaker (one voice per talker); a listener also
+	//near the sender hears whichever of the speaker and the sender's own voice is louder for them (worked
+	//out on their client, see SCR_VONController.WriteJSON).
 	//==========================================================================================================================================================================
 	protected void BroadcastToSpeakers(CVON_VONContainer VONContainer, int senderId, RplId transmittingRadio, vector senderOrigin, float maxDist, array<int> receivers, bool encryption)
 	{
@@ -443,17 +452,18 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 		foreach (CVON_RadioComponent speaker: m_aSpeakerRadios)
 		{
-			if (!speaker || !speaker.HasActiveSpeaker())
+			// Cheapest checks first: most registered radios are on other frequencies
+			if (!speaker || speaker.m_sFrequency != VONContainer.m_sFrequency || speaker.m_iTimeDeviation != VONContainer.m_iTimeDeviation)
+				continue;
+
+			if (encryption && speaker.m_sFactionKey != VONContainer.m_sFactionKey)
+				continue;
+
+			if (!speaker.HasActiveSpeaker())
 				continue;
 
 			// A radio doesn't play its own transmission
 			if (speaker.GetRplId() == transmittingRadio)
-				continue;
-
-			if (speaker.m_sFrequency != VONContainer.m_sFrequency || speaker.m_iTimeDeviation != VONContainer.m_iTimeDeviation)
-				continue;
-
-			if (encryption && speaker.m_sFactionKey != VONContainer.m_sFactionKey)
 				continue;
 
 			IEntity speakerEntity = speaker.GetSpeakerEntity();
@@ -465,7 +475,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			if (maxDist > 0 && vector.DistanceSq(speakerOrigin, senderOrigin) > maxDist * maxDist)
 				continue;
 
-			float reach = speaker.m_iSpeakerRange + SPEAKER_SEND_MARGIN;
+			float reach = speaker.GetSpeakerRange() + SPEAKER_SEND_MARGIN;
 			float reachSq = reach * reach;
 			foreach (int playerId: m_aSpeakerPlayerIds)
 			{
@@ -496,7 +506,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			if (!receiverController)
 				continue;
 
-			receiverController.AddLocalSpeakerBroadcast(VONContainer, senderId, senderOrigin, maxDist, speaker.GetRplId(), speaker.m_iSpeakerRange);
+			receiverController.AddLocalSpeakerBroadcast(VONContainer, senderId, senderOrigin, maxDist, speaker.GetRplId(), speaker.GetSpeakerRange());
 			receivers.Insert(playerId);
 		}
 	}

@@ -41,6 +41,12 @@ class CVON_ServerSettings
 	[Attribute("1", desc: "A radio operator killed or knocked out mid-transmission is cut off with a burst of static")]
 	bool m_bTransmissionCutOff;
 
+	[Attribute("1", desc: "Players can turn on the speaker of a handheld radio they carry (Toggle Radio Speaker keybind), so people around them hear its traffic. Manpack and vehicle speakers work either way")]
+	bool m_bHandheldSpeakers;
+
+	[Attribute("1", desc: "A switched-on radio dropped on the ground keeps playing its traffic out loud for anyone nearby")]
+	bool m_bDroppedRadiosTransmit;
+
 	[Attribute("0", UIWidgets.Slider, desc: "Enemy AI can hear players talking within their voice range and turn toward them (0 = off, 1 = AI in range hear you almost at once, even through walls)", params: "0 1 0.05")]
 	float m_fAIHearing;
 }

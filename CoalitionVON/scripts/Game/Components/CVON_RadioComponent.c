@@ -67,9 +67,13 @@ class CVON_RadioComponent: ScriptComponent
 	CVON_EStereo m_eStereo = CVON_EStereo.BOTH;
 
 	//Speaker: the radio plays out loud for the people around it, positioned where it is. Speakers start
-	//off; a vehicle's crew or a manpack's carrier turns theirs on (CanUseSpeaker / SpeakerOnByDefault).
-	[Attribute("15", desc: "Metres at which the radio's speaker fades out")]
+	//off; a vehicle's crew or the radio's carrier turns theirs on (CanUseSpeaker / SpeakerOnByDefault).
+	//A radio lying on the ground plays out loud by itself (IsDropped).
+	[Attribute("15", desc: "Metres at which the radio's speaker fades out (manpacks and vehicles; handheld and dropped radios carry at most HANDHELD_SPEAKER_RANGE)")]
 	int m_iSpeakerRange;
+
+	//A handheld radio's (or a dropped one's) small speaker doesn't carry as far as a manpack's
+	static const int HANDHELD_SPEAKER_RANGE = 8;
 
 	//Flipped from the radio's default by the Toggle Radio Speaker keybind
 	[RplProp()] bool m_bSpeakerToggled = false;
@@ -240,9 +244,17 @@ class CVON_RadioComponent: ScriptComponent
 		return false;
 	}
 
+	//Its carrier can turn it on: always for a manpack, for a handheld while the server allows it
+	//(m_bHandheldSpeakers)
 	bool CanUseSpeaker()
 	{
-		return IsManpack();
+		if (!ChimeraCharacter.Cast(GetCarrier()))
+			return false;
+		if (IsManpack())
+			return true;
+
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		return gamemode && gamemode.IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HANDHELD_SPEAKERS);
 	}
 
 	bool IsSpeakerOn()
@@ -250,12 +262,38 @@ class CVON_RadioComponent: ScriptComponent
 		return SpeakerOnByDefault() != m_bSpeakerToggled;
 	}
 
-	bool HasActiveSpeaker()
+	//Lying loose on the ground after someone carried it (it has a key fill). Radios nobody has carried yet,
+	//like spares in a crate, stay silent.
+	bool IsDropped()
 	{
-		return CanUseSpeaker() && IsSpeakerOn() && m_bPower;
+		return !GetOwner().GetParent() && m_sFactionKey != "";
 	}
 
-	//What the speaker's sound comes from: the character carrying the radio (vehicle radios: the vehicle)
+	//Playing out loud right now: switched on, and either dropped (while the server allows it,
+	//m_bDroppedRadiosTransmit) or carried with its speaker turned on
+	bool HasActiveSpeaker()
+	{
+		if (!m_bPower)
+			return false;
+
+		if (IsDropped())
+		{
+			CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+			return gamemode && gamemode.IsServerSettingOn(CVON_VONGameModeComponent.SETTING_DROPPED_RADIOS);
+		}
+		return CanUseSpeaker() && IsSpeakerOn();
+	}
+
+	//Metres at which the speaker fades out
+	int GetSpeakerRange()
+	{
+		if (IsManpack() || m_iSpeakerRange < HANDHELD_SPEAKER_RANGE)
+			return m_iSpeakerRange;
+		return HANDHELD_SPEAKER_RANGE;
+	}
+
+	//What the speaker's sound comes from: the character carrying the radio (vehicle radios: the vehicle; a
+	//dropped radio: itself)
 	IEntity GetSpeakerEntity()
 	{
 		return GetCarrier();
@@ -264,8 +302,11 @@ class CVON_RadioComponent: ScriptComponent
 	vector GetSpeakerPosition()
 	{
 		IEntity speaker = GetSpeakerEntity();
-		if (!speaker)
-			return GetOwner().GetOrigin();
+		if (!speaker || speaker == GetOwner())
+		{
+			vector groundOffset = "0 0.1 0";
+			return GetOwner().GetOrigin() + groundOffset;
+		}
 
 		vector offset = "0 1.3 0";
 		return speaker.GetOrigin() + offset;
@@ -524,6 +565,11 @@ class CVON_RadioComponent: ScriptComponent
 					AddGroupFrequencies(overrideContainer, SRFrequencies, LRFrequencies);
 			}
 		}
+
+		//Every radio with a key fill can end up playing out loud (its speaker turned on, or dropped), so
+		//transmissions check it (BroadcastToSpeakers skips radios on other frequencies first)
+		if (gamemode)
+			gamemode.RegisterSpeakerRadio(this);
 
 		m_aChannels.InsertAll(SRFrequencies);
 		m_aChannels.InsertAll(LRFrequencies);

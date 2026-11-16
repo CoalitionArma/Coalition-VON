@@ -106,6 +106,17 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		return GetOwner();
 	}
 
+	//Built in: never lying on the ground, and its speaker carries the full m_iSpeakerRange
+	override bool IsDropped()
+	{
+		return false;
+	}
+
+	override int GetSpeakerRange()
+	{
+		return m_iSpeakerRange;
+	}
+
 	override vector GetSpeakerPosition()
 	{
 		vector offset = "0 1.5 0";
