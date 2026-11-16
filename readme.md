@@ -59,6 +59,42 @@ When leaving the game, the plugin returns the player to their previous channel.
 
 - Any changes to Server Settings only take effect after a server restart.
 
+# CVON server settings (server config)
+
+Server admins set CVON's gameplay settings in the Arma Reforger server config, the same way as ACE: in the `missionHeader` object under `game.gameProperties`. Next to ACE's `m_ACE_Settings`, add `m_CVON_Settings`:
+
+```json
+"missionHeader": {
+    "m_CVON_Settings": {
+        "m_eRadioGameAudio": 0,
+        "m_bTerrainBlocksRadio": true,
+        "m_fTerrainBlockStrength": 1.0,
+        "m_eRadioDuplex": 0,
+        "m_bSquelchTones": true,
+        "m_bTransmissionCutOff": true,
+        "m_bHandheldSpeakers": true,
+        "m_bDroppedRadiosTransmit": true,
+        "m_fAIHearing": 0.0
+    }
+}
+```
+
+| Field | Type, default | What it does |
+|---|---|---|
+| `m_eRadioGameAudio` | int, `0` | Mixing game audio into radio transmissions. `0`: each player's own setting (settings menu, **Coalition VON** tab). `1`: on for everyone. `2`: off for everyone. Players see the server's choice, greyed out, on that tab. |
+| `m_bTerrainBlocksRadio` | bool, `true` | Hills and mountains between sender and receiver weaken radio signals. |
+| `m_fTerrainBlockStrength` | float 0–2, `1.0` | How much terrain weakens them: `0` none, `1` normal, `2` double. |
+| `m_eRadioDuplex` | int, `0` | `0`: half duplex. One transmission at a time: a radio that's receiving someone won't transmit (the player hears an error tone and presses again once the channel is clear), and while a player transmits they don't hear anything else on that frequency. People standing next to them are still heard directly. `1`: full duplex. Players can transmit over each other and hear the frequency while they transmit. |
+| `m_bSquelchTones` | bool, `true` | Listeners hear a squelch burst when a transmission opens and a squelch tail when it closes. |
+| `m_bTransmissionCutOff` | bool, `true` | A radio operator killed or knocked out mid-transmission is cut off with a burst of static. |
+| `m_bHandheldSpeakers` | bool, `true` | Players can put a handheld radio they carry on speaker ("Toggle Radio Speaker" keybind), so people around them hear its traffic. Manpack and vehicle speakers work either way. |
+| `m_bDroppedRadiosTransmit` | bool, `true` | A radio dropped on the ground, while switched on, keeps playing its traffic out loud for anyone nearby. |
+| `m_fAIHearing` | float 0–1, `0.0` | Enemy AI can hear players talking. `0`: off. `1`: any enemy AI within your voice range hears you almost as soon as you speak, walls or not. In between, AI close by are likelier to hear you than AI near the edge of your voice range, and walls make it less likely; both matter less the higher the value. AI that hear you turn toward you, and their group knows roughly where you are. It covers all talking, including radio calls, since those come out of your mouth too. Has no effect in PvP. |
+
+- **One source at a time:** CVON reads the whole object from one place, as ACE does. A field left out of the server config takes the default above, not the mission's value. Without `m_CVON_Settings` in the server config, the mission's own settings apply (`m_MissionSettings` on the world's `CVON_VONGameModeComponent`), and the defaults apply without either.
+- **Read once:** the server reads it from the first mission it loads, as ACE does. Later scenario changes keep using it, because their mission headers don't carry the server config's overrides. Restart the server after changing it.
+- **Clients need nothing:** the server sends the settings in force to every player.
+
 # For developers: how the game and the plugin talk
 
 The game and the TeamSpeak plugin exchange small files in the client's profile folder (`Documents\My Games\ArmaReforger\profile`). The plugin wakes up whenever one of them changes.
@@ -69,7 +105,7 @@ The game and the TeamSpeak plugin exchange small files in the client's profile f
 | `VONData.json` / `VONData.bin` | game, ~20 times a second (immediately on push-to-talk) | Everyone the player can hear: stereo gains, muffling, radio frequency and quality, `IsTransmitting`. The plugin uses whichever was written last. |
 | `RadioData.json` | game, when one of the player's radios changes | The player's radios: frequency, volume, ear, encryption key |
 | `VONHeartbeat.json` | game, every second | Liveness. If it stops while in game (crash), the plugin closes the mic after 3 s and leaves the VON channel after 10 s. |
-| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`, `gamemix1`). The game only writes `VONData.bin` while this lists `bin1`, and only adds `RadioMix` / `GameAudio` to `VONData.json` while it lists `gamemix1`. |
+| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`, `gamemix1`, `immersion1`). The game only writes `VONData.bin` while this lists `bin1`. It only adds `RadioMix` / `GameAudio` to `VONData.json` while it lists `gamemix1`, and the radio immersion keys while it lists `immersion1`. |
 | `VONTalking.json` | plugin, while in game | TeamSpeak client IDs currently talking; the game refreshes players who aren't talking less often. |
 
 `VONData.bin` is the same data as `VONData.json` packed into fixed records. Its layout is documented in `load_von_bin_into` (plugin.c) and written by `WriteVONDataBinary` (CVON_SCR_VONController.c); change both together and bump the format version.
@@ -81,7 +117,7 @@ Each entry in `VONData` has a `VONType`:
 | 0 Direct | Proximity voice | Positioned by the game's left/right gains; muffle and behind-the-head filters |
 | 1 Radio | Radio transmission | Radio chain if one of the player's radios matches, otherwise direct |
 | 2 Intercom | Talker on the player's vehicle intercom (the listener's game decides this) | Clear, centred, telephone band |
-| 3 Speaker | Radio traffic heard through a nearby vehicle's speaker | Radio chain, then positioned at the vehicle like direct |
+| 3 Speaker | Radio traffic heard through a nearby radio's speaker (a vehicle's, a carried radio on speaker, a dropped radio) | Radio chain, then positioned at that radio like direct |
 
 Plugins before 3.0 play types 2 and 3 as direct speech.
 
@@ -94,6 +130,21 @@ While a player talks on a radio, the plugin mixes what their game is playing (gu
 - **Mixing** (`ts3plugin_onEditCapturedVoiceDataEvent` in plugin.c): TeamSpeak calls it after its own noise suppression and voice detection, and only frames TeamSpeak is about to send are touched, so a muted mic or voice activation still decide what goes out. The first 250 ms after keying are skipped, so the game's own key-up beep isn't sent. The game audio then fades in, goes through a peak limiter (`GAMEMIX_CEILING`) and drops up to 6 dB while the player speaks. Levels are the `GAMEMIX_*` defines.
 - **Listeners need nothing new:** the mix happens on the sender's side, and the transmission goes through each listener's radio chain as usual. Players close enough to hear the sender directly also get the game audio in their direct audio (TeamSpeak sends one stream to everyone), a little after their own game plays the same sound.
 
+# Radio immersion
+
+Each feature has a server setting (see "CVON server settings"). When the server turns one off, the game stops sending its data, so the plugin plays nothing for it.
+
+- **Terrain** (`ComputeTerrainFactor` in CVON_SCR_VONController.c): the listener's game samples the terrain height every 25 m along the path between the two radios, about 1.6 m above each. The highest ridge above that line costs up to 60 % of the signal, each further ridge 15 %, and the share of the path in shadow up to 25 %, scaled by `m_fTerrainBlockStrength`. It multiplies the distance-based `ConnectionQuality`, which the plugin already turns into static. It uses height lookups, not traces, and each talker is recomputed once a second or when either end moves 25 m. A helicopter or a hilltop operator clears the hills on their own.
+- **Half duplex** (`IsBlockedByOwnTransmission` in CVON_SCR_VONController.c): while the player transmits on a radio, their game blanks the frequency of incoming radio entries on that frequency. The plugin then finds no radio for them and plays them as direct speech at their direct gains, so only a sender close by is heard. Speaker entries aren't affected: the vehicle's radio is a different radio. Busy channel lockout (`IsChannelBusy`): when the player keys a radio, their game looks for a radio entry on the same frequency, time deviation and key that reaches them (signal above zero after distance and terrain). If there is one, the radio doesn't key and the player hears vanilla's radio error sound; holding the key doesn't key it later, they press again. Two players keying within the same moment can both get through, since neither game has the other's transmission yet. Nothing changes in the plugin.
+- **Squelch** (`update_squelch_events`, `squelch_render` in plugin.c): the plugin watches for radio talkers that one of the player's radios receives starting and stopping. It plays a short squelch burst on open and a squelch tail on close, longer and louder for weak signals, panned to that radio's ear at its volume. They're added in TeamSpeak's mixed playback callback, so a tail can play after the talker's own audio has ended. Besides the server setting, each player can turn them off for themselves with "Radio Squelch Tones" on the **Coalition VON** settings tab (`CVON_GameSettings.m_bSquelchTones`, on by default); their game then writes `SquelchTones` off. When the server has squelch off, the option shows "off", greyed out.
+- **Cut-off**: a sender whose character stops being alive mid-transmission sends a cut-off (`BroadcastCutOffLocalVONToServer`) instead of the normal release. The server tells each receiver (`CutOffLocalVONBroadcast`), then ends the transmission as usual, so `RemoveLocalVONBroadcasts` and anything hooked on it still run. Each receiver keeps the entry 0.5 s marked as cut off, and its plugin silences the talker and plays a burst of crackling static instead of the squelch tail.
+
+- **AI hearing** (`CVON_AIHearing`, server only): each player's game watches the plugin's talking list, which includes the player's own TeamSpeak client, and tells the server when they start and stop talking (`SetSpeakingForAI`), only while `m_fAIHearing` is above 0. Every 0.5 s the server checks enemy AI within each talker's voice range (the same range players hear, from their voice volume setting). With `s` = `m_fAIHearing`, the chance of being heard each check is `s × (1 − (1 − s) × (distance / range)²)`, times `0.35 + 0.65 × s` with something solid in between, so at 1 it's certain anywhere in range. An AI that hears the talker looks toward them (`SCR_AILookAction`, danger priority), and its group gets them as a heard, not seen, target (`SCR_AIGroupPerception.AddOrUpdateGunshot`, not endangering). The same AI can't hear the same player again for 15 s. Players on plugins without `talking1` aren't heard by AI.
+
+Format, all in fields older plugins ignore:
+- **`VONData.bin`:** header flags bit 3 `SquelchTones`; entry flags bit 3 cut off (bits 1–2 reserved).
+- **`VONData.json`:** top-level `SquelchTones`; per entry `CutOff`.
+
 # Vehicle radios and intercom
 
 `CVON_VehicleRadioComponent` gives a vehicle a radio, a speaker and an intercom. The mod adds it to the vanilla `TrackedVehicle_Base`, `Wheeled_APC_Base`, `Helicopter_Base`, `Wheeled_Car_Base` and `Wheeled_Truck_Base` prefabs, so vehicles inheriting from those have comms; add it to any other vehicle prefab (or remove it) in Workbench. Settings on the component:
@@ -104,10 +155,17 @@ While a player talks on a radio, the plugin mixes what their game is playing (gu
 - `m_sStartFrequency`: the frequency the radio starts on, and goes back to after every key fill (e.g. an air net on helicopters). When empty, the first of these that is set wins: the faction's `m_sVehicleFrequency` (on its callsign info, next to `m_aGroupFrequencyOverrides`), the frequency config's `m_sVehicleFrequency`, the first long-range frequency on the radio's channel list, channel 1. A start frequency that isn't on the channel list is added to it.
 - `m_bHasSpeaker`, `m_iSpeakerRange` (25 m): the radio can play out loud. Players near the vehicle hear its traffic unless they have the frequency themselves or are close enough to hear the sender. The speaker starts off; the crew turn it on and off with the "Toggle Radio Speaker" keybind (Left Ctrl + End).
 - `m_bHasIntercom`, `m_bPassengersOnIntercom` (off): crew hear each other clearly whenever they talk, at any distance between seats. Passenger seats join too when enabled.
+- `m_bHasInfantryPhone` (on for `TrackedVehicle_Base` and `Wheeled_APC_Base`): an infantry phone at the back of the vehicle. A player on foot standing within 2 m of the middle of the rear uses "Pick Up Infantry Phone" and is on the crew intercom: they and the crew hear each other clearly while they hold it ("Hang Up Infantry Phone" to put it back). One person at a time, one phone per person. The server hangs it up if they move more than 4 m from it, die, are knocked out, get in a vehicle, or the vehicle is destroyed. The phone's position comes from the vehicle's bounding box, so it fits any vehicle on those bases. Another vehicle prefab needs `m_bHasInfantryPhone` plus the `CVON_InfantryPhone` action context (centred, radius 6, like vanilla's Unflipper) and `CVON_InfantryPhoneAction` on its `ActionsManagerComponent`; see the two base prefab overrides.
 
 # Manpack radios: handset and speaker
 
 A manpack is a long-range CVON radio carried by someone wearing a radio backpack (any backpack with a radio component, e.g. the CRF's inert R-107M / AN/PRC-77 / PRC-351 backpacks). Set `m_bManpackNeedsRadioBackpack` off on `CVON_VONGameModeComponent` to make any carried long-range radio count.
 
 - **Handset:** stand behind the radio operator and use "Grab Handset" (the "Back" interaction on characters). While you hold it, their radio is on your radio keys after your own radios: you hear its net and can transmit on it. Use "Return Handset" to give it back. Only one person holds it at a time; the server takes it back if you move more than 3 m from the operator (`CVON_Manpack.HANDSET_CORD_LENGTH`), die, or the radio stops being a manpack.
-- **Speaker:** the operator turns the manpack's speaker on or off with the "Toggle Radio Speaker" keybind (Left Ctrl + End, when not in a vehicle crew seat). Its traffic then plays in 3D from the operator for anyone within `m_iSpeakerRange` (15 m by default) who doesn't have the frequency themselves.
+- **Speaker:** the operator turns the manpack's speaker on or off with the "Toggle Radio Speaker" keybind (Left Ctrl + End, when not in a vehicle crew seat). Its traffic then plays in 3D from the operator for anyone within `m_iSpeakerRange` (15 m by default) who doesn't have the frequency themselves. With handheld speakers on (below), the keybind switches the active radio's speaker, so make the manpack the active radio first.
+
+# Handheld speakers and dropped radios
+
+- **Handheld speakers** (server setting `m_bHandheldSpeakers`): "Toggle Radio Speaker" (Left Ctrl + End, when not in a vehicle crew seat) puts the player's active radio on speaker, handheld or manpack. Its traffic then plays in 3D from the player for anyone nearby who doesn't have the frequency themselves; the player keeps hearing it in their headset. A handheld's speaker fades out over `CVON_RadioComponent.HANDHELD_SPEAKER_RANGE` (8 m), or the radio's `m_iSpeakerRange` if that's smaller. With the setting off, the keybind only reaches manpacks, as before.
+- **Dropped radios** (server setting `m_bDroppedRadiosTransmit`): a switched-on radio lying on the ground plays its traffic out loud from where it lies, up to 8 m, whether or not its speaker was on. Turn it off before dropping it to keep it quiet. Only radios someone has carried count (they have a key fill), so spares that were never handed out stay silent, and a radio inside a backpack, crate or vehicle doesn't play.
+- **How:** every radio registers with the gamemode when it gets its key fill (`InitializeForFaction`). `BroadcastToSpeakers` checks each one's frequency, then `HasActiveSpeaker` (`IsDropped`: no parent entity and a key fill), and sends nearby players the usual speaker entry. Listeners need no new plugin.

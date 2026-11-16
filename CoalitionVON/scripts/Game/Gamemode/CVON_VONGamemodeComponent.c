@@ -1,5 +1,6 @@
 //Also the VONType the plugin reads. INTERCOM is only ever written by the listener (a talker on their
-//vehicle intercom); SPEAKER is a radio transmission heard through a nearby vehicle's speaker.
+//vehicle intercom); SPEAKER is a radio transmission heard through a nearby radio's speaker (a vehicle's,
+//a carried radio with its speaker on, a dropped radio).
 enum CVON_EVONType
 {
 	DIRECT,
@@ -48,9 +49,14 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	protected ref map<int, ref CVON_VONContainer> m_mActiveBroadcasts = new map<int, ref CVON_VONContainer>();
 	protected ref map<int, float> m_mActiveBroadcastRange = new map<int, float>();
 
-	// Server: radios with a speaker (vehicle radios, manpacks whose speaker was turned on), so a transmission
-	// can find the speakers tuned to its frequency
+	// Server: radios that can play out loud (vehicle radios, and every carried radio once it has a key fill:
+	// its speaker may be turned on, or it may be dropped), so a transmission can find the speakers tuned to
+	// its frequency
 	ref array<CVON_RadioComponent> m_aSpeakerRadios = {};
+
+	// Every machine: vehicles with an infantry phone, so its holder can be put on the crew intercom
+	// (CVON_VehicleComms.GetPhoneVehicle)
+	ref array<CVON_VehicleRadioComponent> m_aVehicleComms = {};
 
 	// Server: radios whose handset someone is holding, so the holder's radios can include it
 	ref array<CVON_RadioComponent> m_aHeldHandsets = {};
@@ -75,6 +81,26 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	[Attribute("1")] bool m_bTeamspeakChecks;
 
 	[Attribute()] ref array<ref CVON_SharedFrequencyObject> m_aSharedFrequencies;
+
+	//Server settings for this mission. A server config's missionHeader.m_CVON_Settings replaces them (see
+	//CVON_ServerSettings); without either, the defaults apply.
+	[Attribute(desc: "CVON server settings for this mission. The server config's missionHeader.m_CVON_Settings replaces them when present.")]
+	ref CVON_ServerSettings m_MissionSettings;
+
+	//The server settings in force, replicated to every client (ApplyServerSettings)
+	static const int SETTING_TERRAIN = 1;
+	static const int SETTING_HALF_DUPLEX = 2;
+	static const int SETTING_SQUELCH = 4;
+	static const int SETTING_CUT_OFF = 8;
+	static const int SETTING_HANDHELD_SPEAKERS = 16;
+	static const int SETTING_DROPPED_RADIOS = 32;
+	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_HALF_DUPLEX | SETTING_SQUELCH | SETTING_CUT_OFF | SETTING_HANDHELD_SPEAKERS | SETTING_DROPPED_RADIOS;
+	[RplProp()] protected float m_fTerrainBlockStrength = 1;
+	[RplProp()] protected int m_iRadioGameAudioEnforcement = CVON_ESettingEnforcement.PLAYER_CHOICE;
+	//Replicated so clients only report their talking (SetSpeakingForAI) while it's on
+	[RplProp()] protected float m_fAIHearing = 0;
+	//Server only, while AI hearing is on
+	protected ref CVON_AIHearing m_AIHearing;
 
 	//Wow a pointer, so performant
 	static CVON_VONGameModeComponent m_Instance;
@@ -104,6 +130,86 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		super.OnPostInit(owner);
 		if (m_sFreqConfig != "")
 			m_FreqConfig = CVON_FreqConfig.Cast(BaseContainerTools.CreateInstanceFromContainer(BaseContainerTools.LoadContainer(m_sFreqConfig).GetResource().ToBaseContainer()));
+
+		if (Replication.IsServer())
+			ApplyServerSettings();
+	}
+
+	//Server: puts the settings in force (server config, else the mission's, else the defaults) into the
+	//replicated values every client reads
+	//==========================================================================================================================================================================
+	void ApplyServerSettings()
+	{
+		if (!Replication.IsServer())
+			return;
+
+		CVON_ServerSettings settings = ArmaReforgerScripted.CVON_GetServerConfigSettings();
+		if (!settings)
+			settings = m_MissionSettings;
+		if (!settings)
+			settings = new CVON_ServerSettings();
+
+		int flags = 0;
+		if (settings.m_bTerrainBlocksRadio && settings.m_fTerrainBlockStrength > 0)
+			flags |= SETTING_TERRAIN;
+		if (settings.m_eRadioDuplex != CVON_ERadioDuplex.FULL)
+			flags |= SETTING_HALF_DUPLEX;
+		if (settings.m_bSquelchTones)
+			flags |= SETTING_SQUELCH;
+		if (settings.m_bTransmissionCutOff)
+			flags |= SETTING_CUT_OFF;
+		if (settings.m_bHandheldSpeakers)
+			flags |= SETTING_HANDHELD_SPEAKERS;
+		if (settings.m_bDroppedRadiosTransmit)
+			flags |= SETTING_DROPPED_RADIOS;
+
+		m_iServerSettingFlags = flags;
+		m_fTerrainBlockStrength = Math.Clamp(settings.m_fTerrainBlockStrength, 0, 2);
+		m_iRadioGameAudioEnforcement = settings.m_eRadioGameAudio;
+		m_fAIHearing = Math.Clamp(settings.m_fAIHearing, 0, 1);
+		if (m_fAIHearing > 0 && !m_AIHearing)
+			m_AIHearing = new CVON_AIHearing();
+		if (m_AIHearing)
+			m_AIHearing.SetStrength(m_fAIHearing);
+		Replication.BumpMe();
+	}
+
+	//How keenly enemy AI hear players talking; 0 = off (CVON_AIHearing)
+	//==========================================================================================================================================================================
+	float GetAIHearing()
+	{
+		return m_fAIHearing;
+	}
+
+	//Server: a player started or stopped talking (SCR_PlayerController.SetSpeakingForAI)
+	//==========================================================================================================================================================================
+	void SetPlayerSpeakingForAI(int playerId, bool speaking)
+	{
+		if (m_AIHearing)
+			m_AIHearing.SetSpeaking(playerId, speaking);
+	}
+
+	//==========================================================================================================================================================================
+	bool IsServerSettingOn(int setting)
+	{
+		return (m_iServerSettingFlags & setting) != 0;
+	}
+
+	float GetTerrainBlockStrength()
+	{
+		if (!IsServerSettingOn(SETTING_TERRAIN))
+			return 0;
+		return m_fTerrainBlockStrength;
+	}
+
+	CVON_ESettingEnforcement GetRadioGameAudioEnforcement()
+	{
+		switch (m_iRadioGameAudioEnforcement)
+		{
+			case CVON_ESettingEnforcement.FORCE_ON: return CVON_ESettingEnforcement.FORCE_ON;
+			case CVON_ESettingEnforcement.FORCE_OFF: return CVON_ESettingEnforcement.FORCE_OFF;
+		}
+		return CVON_ESettingEnforcement.PLAYER_CHOICE;
 	}
 
 	override void OnPlayerConnected(int playerId)
@@ -123,6 +229,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			RemoveLocalVONBroadcasts(playerId);
 			RemoveFromFrequencyIndex(playerId);
 			StopRadioListeningFor(playerId);
+			if (m_AIHearing)
+				m_AIHearing.OnPlayerLeft(playerId);
 		}
 		if (m_PlayerFreqArray.Contains(playerId))
 			m_PlayerFreqArray.Remove(playerId);
@@ -331,10 +439,11 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			BroadcastToSpeakers(VONContainer, playerIdToAdd, radioId, senderOrigin, maxDist, receivers, gamemode.IsEncryptionEnabled());
 	}
 
-	//Vehicle speakers: players near a vehicle whose radio is on the transmission's frequency hear it from
-	//the vehicle, unless they already have it on a radio of their own. Each player gets their nearest
-	//speaker (one voice per talker); a listener also near the sender hears whichever of the speaker and the
-	//sender's own voice is louder for them (worked out on their client, see SCR_VONController.WriteJSON).
+	//Speakers: players near a radio playing out loud (a vehicle's, a carried radio with its speaker on, a
+	//dropped radio) on the transmission's frequency hear it from that radio, unless they already have it on
+	//a radio of their own. Each player gets their nearest speaker (one voice per talker); a listener also
+	//near the sender hears whichever of the speaker and the sender's own voice is louder for them (worked
+	//out on their client, see SCR_VONController.WriteJSON).
 	//==========================================================================================================================================================================
 	protected void BroadcastToSpeakers(CVON_VONContainer VONContainer, int senderId, RplId transmittingRadio, vector senderOrigin, float maxDist, array<int> receivers, bool encryption)
 	{
@@ -347,17 +456,18 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 		foreach (CVON_RadioComponent speaker: m_aSpeakerRadios)
 		{
-			if (!speaker || !speaker.HasActiveSpeaker())
+			// Cheapest checks first: most registered radios are on other frequencies
+			if (!speaker || speaker.m_sFrequency != VONContainer.m_sFrequency || speaker.m_iTimeDeviation != VONContainer.m_iTimeDeviation)
+				continue;
+
+			if (encryption && speaker.m_sFactionKey != VONContainer.m_sFactionKey)
+				continue;
+
+			if (!speaker.HasActiveSpeaker())
 				continue;
 
 			// A radio doesn't play its own transmission
 			if (speaker.GetRplId() == transmittingRadio)
-				continue;
-
-			if (speaker.m_sFrequency != VONContainer.m_sFrequency || speaker.m_iTimeDeviation != VONContainer.m_iTimeDeviation)
-				continue;
-
-			if (encryption && speaker.m_sFactionKey != VONContainer.m_sFactionKey)
 				continue;
 
 			IEntity speakerEntity = speaker.GetSpeakerEntity();
@@ -369,7 +479,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			if (maxDist > 0 && vector.DistanceSq(speakerOrigin, senderOrigin) > maxDist * maxDist)
 				continue;
 
-			float reach = speaker.m_iSpeakerRange + SPEAKER_SEND_MARGIN;
+			float reach = speaker.GetSpeakerRange() + SPEAKER_SEND_MARGIN;
 			float reachSq = reach * reach;
 			foreach (int playerId: m_aSpeakerPlayerIds)
 			{
@@ -400,7 +510,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			if (!receiverController)
 				continue;
 
-			receiverController.AddLocalSpeakerBroadcast(VONContainer, senderId, senderOrigin, maxDist, speaker.GetRplId(), speaker.m_iSpeakerRange);
+			receiverController.AddLocalSpeakerBroadcast(VONContainer, senderId, senderOrigin, maxDist, speaker.GetRplId(), speaker.GetSpeakerRange());
 			receivers.Insert(playerId);
 		}
 	}
@@ -414,6 +524,17 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	void UnregisterSpeakerRadio(CVON_RadioComponent radio)
 	{
 		m_aSpeakerRadios.RemoveItem(radio);
+	}
+
+	void RegisterVehicleComms(CVON_VehicleRadioComponent comms)
+	{
+		if (!m_aVehicleComms.Contains(comms))
+			m_aVehicleComms.Insert(comms);
+	}
+
+	void UnregisterVehicleComms(CVON_VehicleRadioComponent comms)
+	{
+		m_aVehicleComms.RemoveItem(comms);
 	}
 
 	void SetHandsetHeld(CVON_RadioComponent radio, bool held)
@@ -532,6 +653,29 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 			pc.RemoveLocalVONBroadcast(playerIdToRemove);
 		}
+	}
+
+	//The sender was killed or knocked out mid-transmission: every receiver is told it was cut off, then the
+	//transmission ends as usual (so RemoveLocalVONBroadcasts and anything hooked on it still run)
+	//==========================================================================================================================================================================
+	void CutOffLocalVONBroadcasts(int senderId)
+	{
+		array<int> receivers;
+		if (m_mBroadcastReceivers.Find(senderId, receivers) && receivers)
+		{
+			PlayerManager pm = GetGame().GetPlayerManager();
+			foreach (int playerId: receivers)
+			{
+				if (playerId == senderId)
+					continue;
+
+				SCR_PlayerController pc = SCR_PlayerController.Cast(pm.GetPlayerController(playerId));
+				if (pc)
+					pc.CutOffLocalVONBroadcast(senderId);
+			}
+		}
+
+		RemoveLocalVONBroadcasts(senderId);
 	}
 
 	//Radio listening: a player hears what another player's radios receive (an addon's spectators, say).

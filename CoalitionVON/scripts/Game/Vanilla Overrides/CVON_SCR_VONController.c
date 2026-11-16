@@ -237,8 +237,9 @@ modded class SCR_VONController
 		m_VONHud.ShowVONChange(radioComp.m_iCurrentChannel - 1);
 	}
 
-	//Keybind: turn a radio speaker on or off. In a vehicle crew seat, the vehicle radio's; otherwise our own
-	//manpack's, so everyone around us hears the net.
+	//Keybind: turn a radio speaker on or off. In a vehicle crew seat, the vehicle radio's; otherwise our
+	//active radio's (handhelds while the server allows it), else our manpack's, so everyone around us
+	//hears the net.
 	//==========================================================================================================================================================================
 	void ToggleVehicleSpeaker()
 	{
@@ -246,6 +247,13 @@ modded class SCR_VONController
 			return;
 
 		CVON_RadioComponent radio = CVON_VehicleComms.GetOperatedRadio(m_Player);
+		if ((!radio || !radio.CanUseSpeaker()) && m_PlayerController.m_aRadios.Count() > 0 && m_PlayerController.m_aRadios.Get(0))
+		{
+			radio = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
+			// Someone else's (a held handset) isn't ours to switch
+			if (radio && radio.GetCarrier() != m_Player)
+				radio = null;
+		}
 		if (!radio || !radio.CanUseSpeaker())
 			radio = CVON_Manpack.GetManpackRadio(m_Player);
 		if (!radio || !radio.CanUseSpeaker())
@@ -443,6 +451,8 @@ modded class SCR_VONController
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
 						return;
+					if (RefuseIfChannelBusy(radioComp))
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -465,6 +475,8 @@ modded class SCR_VONController
 
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
+						return;
+					if (RefuseIfChannelBusy(radioComp))
 						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
@@ -489,6 +501,8 @@ modded class SCR_VONController
 					CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
 					if (!radioComp)
 						return;
+					if (RefuseIfChannelBusy(radioComp))
+						return;
 					container.m_sFrequency = radioComp.m_sFrequency;
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
@@ -508,6 +522,150 @@ modded class SCR_VONController
 		m_bHasBroadcasted = false;
 		if (container.m_eVonType == CVON_EVONType.RADIO)
 			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
+	}
+
+	//Terrain between two radios: 1 for a clear line of sight, lower the more hill is in the way. Samples the
+	//terrain height along the path (no traces, so a long path costs a few dozen height lookups) and looks at
+	//how far the hills rise above the line between the two antennas: the highest ridge does most of the
+	//damage, each further ridge and the share of the path in shadow add to it.
+	//==========================================================================================================================================================================
+	float ComputeTerrainFactor(vector from, vector to, float strength)
+	{
+		if (strength <= 0)
+			return 1;
+
+		BaseWorld world = GetGame().GetWorld();
+		if (!world)
+			return 1;
+
+		float distance = vector.DistanceXZ(from, to);
+		if (distance < TERRAIN_SAMPLE_SPACING * 2)
+			return 1;
+
+		int samples = Math.Ceil(distance / TERRAIN_SAMPLE_SPACING);
+		samples = Math.ClampInt(samples, 4, TERRAIN_MAX_SAMPLES);
+		float fromHeight = from[1] + TERRAIN_ANTENNA_HEIGHT;
+		float toHeight = to[1] + TERRAIN_ANTENNA_HEIGHT;
+
+		float maxDepth = 0;
+		int blocked = 0;
+		int ridges = 0;
+		bool inShadow = false;
+		float sampleCount = samples;
+		for (int i = 1; i < samples; i++)
+		{
+			float t = i / sampleCount;
+			float ground = world.GetSurfaceY(Math.Lerp(from[0], to[0], t), Math.Lerp(from[2], to[2], t));
+			float depth = ground - Math.Lerp(fromHeight, toHeight, t);
+			if (depth > 0)
+			{
+				blocked++;
+				if (depth > maxDepth)
+					maxDepth = depth;
+				if (!inShadow)
+					ridges++;
+				inShadow = true;
+			}
+			else
+				inShadow = false;
+		}
+
+		if (blocked == 0)
+			return 1;
+
+		float blockedSamples = blocked;
+		float shadowShare = blockedSamples / (sampleCount - 1);
+		float loss = 0.6 * Math.Clamp(maxDepth / TERRAIN_FULL_BLOCK_DEPTH, 0, 1)
+			+ 0.15 * Math.ClampInt(ridges - 1, 0, 2)
+			+ 0.25 * Math.Clamp(shadowShare * 2, 0, 1);
+		return 1 - Math.Clamp(loss * strength, 0, 0.95);
+	}
+
+	//Terrain factor for an entry, cached: recomputed every TERRAIN_INTERVAL or once an end moved far enough
+	//==========================================================================================================================================================================
+	float GetTerrainFactor(CVON_VONContainer container, vector receiver, vector sender)
+	{
+		if (!m_VONGameModeComponent)
+			return 1;
+		float strength = m_VONGameModeComponent.GetTerrainBlockStrength();
+		if (strength <= 0)
+			return 1;
+
+		bool moved = vector.DistanceSq(receiver, container.m_vTerrainTo) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK
+			|| vector.DistanceSq(sender, container.m_vTerrainFrom) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK;
+		if (m_fTime >= container.m_fNextTerrainTime || moved)
+		{
+			container.m_fTerrainFactor = ComputeTerrainFactor(sender, receiver, strength);
+			container.m_fNextTerrainTime = m_fTime + TERRAIN_INTERVAL;
+			container.m_vTerrainFrom = sender;
+			container.m_vTerrainTo = receiver;
+		}
+		return container.m_fTerrainFactor;
+	}
+
+	//Half duplex (server setting), receiving side: while the player transmits on a radio, that radio can't
+	//receive. Radio traffic on the frequency they're transmitting on is then treated like traffic they have no
+	//radio for: only heard directly, if the sender is close enough.
+	//==========================================================================================================================================================================
+	protected bool IsBlockedByOwnTransmission(CVON_VONContainer container)
+	{
+		if (!m_bIsBroadcasting || !m_CurrentVONContainer || m_CurrentVONContainer.m_eVonType != CVON_EVONType.RADIO)
+			return false;
+		if (container.m_eVonType != CVON_EVONType.RADIO || container.m_sFrequency.IsEmpty())
+			return false;
+		if (container.m_sFrequency != m_CurrentVONContainer.m_sFrequency)
+			return false;
+		return IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HALF_DUPLEX);
+	}
+
+	//Half duplex, transmitting side (busy channel lockout): the radio won't key while it's receiving someone
+	//on its frequency, time deviation and key, as heard here (in range, past the hills). The player gets an
+	//error tone and has to press again once the channel is clear. Two players keying within the same moment
+	//can both get through, as neither has heard the other yet.
+	//==========================================================================================================================================================================
+	protected bool IsChannelBusy(CVON_RadioComponent radioComp)
+	{
+		if (!IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HALF_DUPLEX))
+			return false;
+
+		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
+		{
+			if (container.m_eVonType != CVON_EVONType.RADIO || container.m_bCutOff || container.m_bIsSpectator)
+				continue;
+			if (container.m_sFrequency != radioComp.m_sFrequency || container.m_iTimeDeviation != radioComp.m_iTimeDeviation)
+				continue;
+			if (HasRadioKey(container.m_sFactionKey) && HasRadioKey(radioComp.m_sFactionKey) && container.m_sFactionKey != radioComp.m_sFactionKey)
+				continue;
+			if (RadioSignalAtReceiver(container) > 0)
+				return true;
+		}
+		return false;
+	}
+
+	//Same rule as the plugin: an empty key or "0" means no key
+	protected bool HasRadioKey(string key)
+	{
+		return !key.IsEmpty() && key != "0";
+	}
+
+	//==========================================================================================================================================================================
+	protected bool RefuseIfChannelBusy(CVON_RadioComponent radioComp)
+	{
+		if (!IsChannelBusy(radioComp))
+			return false;
+		SCR_UISoundEntity.SoundEvent(SCR_SoundEvent.SOUND_RADIO_CHANGEFREQUENCY_ERROR);
+		return true;
+	}
+
+	//The signal a radio transmission arrives with at the player's radio: distance, then hills in the way
+	//==========================================================================================================================================================================
+	protected float RadioSignalAtReceiver(CVON_VONContainer container)
+	{
+		vector receiver = GetRadioReceiverOrigin();
+		vector sender = container.m_vSenderLocation;
+		if (container.m_SoundSource)
+			sender = container.m_SoundSource.GetOrigin();
+		return GetSignalStrength(vector.Distance(receiver, sender), container.m_iMaxDistance) * GetTerrainFactor(container, receiver, sender);
 	}
 
 	//True while the player talks on a radio with "mix game audio" on: the plugin then mixes the game's sound
@@ -568,12 +726,37 @@ modded class SCR_VONController
 
 		// Only radio transmissions were sent to the server (see EOnFixedFrame); direct speech has nothing to remove
 		bool wasRadio = m_CurrentVONContainer.m_eVonType == CVON_EVONType.RADIO;
+		bool cutOff = m_bCutOffOnDeactivate;
+		m_bCutOffOnDeactivate = false;
 		m_bIsBroadcasting = false;
 		m_bHasBroadcasted = true;
 		m_CurrentVONContainer = null;
 
 		if (wasRadio)
-			m_PlayerController.BroadcastRemoveLocalVONToServer(m_PlayerController.GetPlayerId());
+		{
+			if (cutOff)
+				m_PlayerController.BroadcastCutOffLocalVONToServer(m_PlayerController.GetPlayerId());
+			else
+				m_PlayerController.BroadcastRemoveLocalVONToServer(m_PlayerController.GetPlayerId());
+		}
+	}
+
+	//Squelch tones play for this player: on for the server and in their own settings
+	//==========================================================================================================================================================================
+	bool IsSquelchActive()
+	{
+		return m_bSquelchSetting && IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH);
+	}
+
+	//A server setting in force (CVON_ServerSettings); all on outside a CVON game mode
+	//==========================================================================================================================================================================
+	bool IsServerSettingOn(int setting)
+	{
+		if (!m_VONGameModeComponent)
+			m_VONGameModeComponent = CVON_VONGameModeComponent.GetInstance();
+		if (!m_VONGameModeComponent)
+			return true;
+		return m_VONGameModeComponent.IsServerSettingOn(setting);
 	}
 
 	//==========================================================================================================================================================================
@@ -652,6 +835,26 @@ modded class SCR_VONController
 	bool m_bGameAudioSetting = true;
 	bool m_bLastWrittenRadioMix = false;
 	bool m_bLastWrittenGameAudio = false;
+
+	// Radio immersion: squelch tones and the cut-off need the plugin ("immersion1"); terrain (GetTerrainFactor)
+	// and half duplex (IsBlockedByOwnTransmission) are worked out here. The server settings switch each one.
+	bool m_bPluginImmersion = false;
+	bool m_bLastWrittenSquelch = false;
+	// Incoming squelch tones: the server's setting and the player's own ("Radio Squelch Tones", Coalition VON
+	// settings tab), refreshed once a second like the game audio setting
+	bool m_bSquelchSetting = true;
+	// The next radio release is a cut-off (killed or knocked out mid-transmission)
+	bool m_bCutOffOnDeactivate = false;
+
+	static const int CUT_OFF_HOLD_MS = 500;		// how long a cut-off entry stays so the plugin can play it
+
+	// Terrain between radios (GetTerrainFactor)
+	static const float TERRAIN_INTERVAL = 1.0;			// seconds between recomputing a talker's path
+	static const float TERRAIN_MOVE_RECHECK = 25;		// ... or sooner once either end moved this far (m)
+	static const float TERRAIN_SAMPLE_SPACING = 25;	// m between terrain height samples along the path
+	static const int   TERRAIN_MAX_SAMPLES = 96;
+	static const float TERRAIN_ANTENNA_HEIGHT = 1.6;	// m above the position of each radio
+	static const float TERRAIN_FULL_BLOCK_DEPTH = 40;	// m of hill above the line of sight for the full ridge loss
 	// TeamSpeak client IDs currently talking (VONTalking.json). Without it everyone counts as talking.
 	ref set<int> m_TalkingClientIds = new set<int>();
 
@@ -710,6 +913,7 @@ modded class SCR_VONController
 		if (!m_bFirstConnect)
 		{
 			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
+			m_bSquelchSetting = CVON_GameSettings.IsSquelchTonesEnabled();
 			ReadPluginFiles();
 			WriteJSON(true, true);
 			m_bFirstConnect = true;
@@ -733,6 +937,7 @@ modded class SCR_VONController
 		{
 			m_fNextPluginFiles = m_fTime + PLUGIN_FILES_INTERVAL;
 			ReadPluginFiles();
+			UpdateSpeakingForAI();
 		}
 
 		//Handles broadcasting to other players
@@ -740,6 +945,10 @@ modded class SCR_VONController
 		{
 			if (m_CharacterController.GetLifeState() != ECharacterLifeState.ALIVE)
 			{
+				//Killed or knocked out mid-transmission: listeners hear the radio cut off, not a clean release
+				if (m_CurrentVONContainer && m_CurrentVONContainer.m_eVonType == CVON_EVONType.RADIO && IsServerSettingOn(CVON_VONGameModeComponent.SETTING_CUT_OFF))
+					m_bCutOffOnDeactivate = true;
+
 				if (m_bToggleBuffer)
 				{
 					m_bToggleBuffer = false;
@@ -767,6 +976,7 @@ modded class SCR_VONController
 		{
 			m_fServerDataBuffer = 0;
 			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
+			m_bSquelchSetting = CVON_GameSettings.IsSquelchTonesEnabled();
 		}
 
 		// VONData is written at ~20 Hz, but straight away when push-to-talk changes
@@ -1013,6 +1223,8 @@ modded class SCR_VONController
 	IEntity m_IntercomVehicle;
 	// Last vehicle we were told about, so the hint shows once per vehicle
 	IEntity m_LastCommsVehicle;
+	// On a vehicle's intercom through its infantry phone (on foot) when last told
+	bool m_bLastOnPhone;
 
 	//Keeps the vehicle radio in our radio list in step with our seat, and says what's connected
 	void RefreshVehicleComms()
@@ -1027,9 +1239,21 @@ modded class SCR_VONController
 		IEntity commsVehicle = m_IntercomVehicle;
 		if (!commsVehicle)
 			commsVehicle = radioEntity;
-		if (commsVehicle == m_LastCommsVehicle)
+		bool onPhone = m_IntercomVehicle && !CVON_VehicleComms.GetSeat(m_Player);
+		if (commsVehicle == m_LastCommsVehicle && onPhone == m_bLastOnPhone)
 			return;
+		bool wasOnPhone = m_bLastOnPhone;
 		m_LastCommsVehicle = commsVehicle;
+		m_bLastOnPhone = onPhone;
+		if (onPhone)
+		{
+			SCR_HintManagerComponent.ShowCustomHint("Infantry phone: you're on the crew intercom", "Coalition VON", 4);
+			return;
+		}
+		//Hung up, walked off, or got into a seat with no intercom for us (getting into a crew seat says
+		//"Vehicle intercom connected" below instead)
+		if (wasOnPhone && !commsVehicle)
+			SCR_HintManagerComponent.ShowCustomHint("Infantry phone hung up", "Coalition VON", 2);
 		if (!commsVehicle)
 			return;
 
@@ -1056,6 +1280,7 @@ modded class SCR_VONController
 		bool binary = false;
 		bool talking = false;
 		bool gameMix = false;
+		bool immersion = false;
 		SCR_JsonLoadContext info = new SCR_JsonLoadContext();
 		if (info.LoadFromFile(PLUGIN_INFO_FILE))
 		{
@@ -1071,11 +1296,13 @@ modded class SCR_VONController
 				binary = features.Contains("bin1");
 				talking = features.Contains("talking1");
 				gameMix = features.Contains("gamemix1");
+				immersion = features.Contains("immersion1");
 			}
 		}
 		m_bPluginReadsBinary = binary;
 		m_bPluginReportsTalking = talking;
 		m_bPluginMixesGameAudio = gameMix;
+		m_bPluginImmersion = immersion;
 
 		m_TalkingClientIds.Clear();
 		if (!talking)
@@ -1096,6 +1323,25 @@ modded class SCR_VONController
 	bool IsTalking(int clientId)
 	{
 		return !m_bPluginReportsTalking || m_TalkingClientIds.Contains(clientId);
+	}
+
+	//AI hearing (server setting): tells the server when this player starts and stops talking, from the
+	//plugin's talking list, which includes our own TeamSpeak client. Plugins that don't report talking never
+	//count as talking here, so their players aren't heard by AI rather than always heard.
+	//==========================================================================================================================================================================
+	protected bool m_bReportedSpeakingForAI = false;
+
+	protected void UpdateSpeakingForAI()
+	{
+		bool speaking = false;
+		if (m_bPluginReportsTalking && m_VONGameModeComponent && m_VONGameModeComponent.GetAIHearing() > 0
+			&& m_CharacterController && m_CharacterController.GetLifeState() == ECharacterLifeState.ALIVE)
+			speaking = m_TalkingClientIds.Contains(m_PlayerController.GetTeamspeakClientId());
+
+		if (speaking == m_bReportedSpeakingForAI)
+			return;
+		m_bReportedSpeakingForAI = speaking;
+		m_PlayerController.SetSpeakingForAI(speaking);
 	}
 
 	//Voice levels: how loud a talker is in each ear, from distance, their voice range setting, walls and
@@ -1784,7 +2030,8 @@ modded class SCR_VONController
 					 (currentEntryCount != m_iLastWrittenEntryCount) ||
 					 (m_bPluginReadsBinary != m_bLastWrittenBinary) ||
 					 (IsRadioGameAudioActive() != m_bLastWrittenRadioMix) ||
-					 (m_bGameAudioSetting != m_bLastWrittenGameAudio);
+					 (m_bGameAudioSetting != m_bLastWrittenGameAudio) ||
+					 (IsSquelchActive() != m_bLastWrittenSquelch);
 
 		// Work out each entry. Players who aren't talking are refreshed every SILENT_GAIN_DIVIDER-th tick,
 		// and the muffling traces run on their own slower schedule per sender.
@@ -1845,19 +2092,22 @@ modded class SCR_VONController
 			else
 			{
 				ComputeDirectLR(container, playerId, talking, left, right, behindIntensity, loweredDecibels);
+
+				//Half duplex: our radio is transmitting, so it hears nothing on this frequency. Without a
+				//frequency the plugin plays them as direct speech, at the direct gains above.
+				if (IsBlockedByOwnTransmission(container))
+					frequency = "";
 			}
 
 			if (container.m_eVonType == CVON_EVONType.RADIO)
 			{
-				if (container.m_SoundSource)
-					container.m_fConnectionQuality = GetSignalStrength(vector.Distance(GetRadioReceiverOrigin(), container.m_SoundSource.GetOrigin()), container.m_iMaxDistance);
-				else
-					container.m_fConnectionQuality = GetSignalStrength(vector.Distance(GetRadioReceiverOrigin(), container.m_vSenderLocation), container.m_iMaxDistance);
+				container.m_fConnectionQuality = RadioSignalAtReceiver(container);
 			}
 			else if (container.m_eVonType == CVON_EVONType.SPEAKER && container.m_SpeakerEntity)
 			{
 				//The vehicle's radio is the receiver: its distance from the sender sets the signal
-				container.m_fConnectionQuality = GetSignalStrength(vector.Distance(container.m_SpeakerEntity.GetOrigin(), container.m_vSenderLocation), container.m_iMaxDistance);
+				vector speakerOrigin = container.m_SpeakerEntity.GetOrigin();
+				container.m_fConnectionQuality = GetSignalStrength(vector.Distance(speakerOrigin, container.m_vSenderLocation), container.m_iMaxDistance) * GetTerrainFactor(container, speakerOrigin, container.m_vSenderLocation);
 			}
 
 			bool sameLanguage = IsSameLanguage(m_PlayerController.GetPlayerId(), container.m_iPlayerId);
@@ -1888,6 +2138,13 @@ modded class SCR_VONController
 			container.m_iCachedType     = outType;
 		}
 
+		foreach (int entryPlayerId, CVON_VONContainer entry: m_PlayerController.m_aLocalEntries)
+		{
+			if (entry.m_bCutOff != entry.m_bCachedCutOff)
+				dirty = true;
+			entry.m_bCachedCutOff = entry.m_bCutOff;
+		}
+
 		if (!dirty)
 			return;
 
@@ -1900,6 +2157,7 @@ modded class SCR_VONController
 		m_bLastWrittenBinary = m_bPluginReadsBinary;
 		m_bLastWrittenRadioMix = IsRadioGameAudioActive();
 		m_bLastWrittenGameAudio = m_bGameAudioSetting;
+		m_bLastWrittenSquelch = IsSquelchActive();
 	}
 
 	//VONData.json: what every plugin version reads
@@ -1914,9 +2172,15 @@ modded class SCR_VONController
 			VONSave.WriteValue("RadioMix", IsRadioGameAudioActive());
 			VONSave.WriteValue("GameAudio", m_bGameAudioSetting);
 		}
+		if (m_bPluginImmersion)
+		{
+			VONSave.WriteValue("SquelchTones", IsSquelchActive());
+		}
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
 			VONSave.StartObject(container.m_iCachedClientId.ToString());
+			if (m_bPluginImmersion)
+				VONSave.WriteValue("CutOff", container.m_bCutOff);
 			VONSave.SetMaxDecimalPlaces(3);
 			VONSave.WriteValue("VONType", container.m_iCachedType);
 			VONSave.WriteValue("Frequency", container.m_sCachedFreq);
@@ -1978,7 +2242,7 @@ modded class SCR_VONController
 		m_mBinStringIndex.Clear();
 		m_iBinarySeq++;
 
-		// bit0 IsTransmitting, bit1 RadioMix, bit2 GameAudio (older plugins only read bit0)
+		// bit0 IsTransmitting, bit1 RadioMix, bit2 GameAudio, bit3 SquelchTones (older plugins only read bit0)
 		int flags = 0;
 		if (m_bIsBroadcasting)
 			flags = 1;
@@ -1986,6 +2250,8 @@ modded class SCR_VONController
 			flags = flags | 2;
 		if (m_bGameAudioSetting)
 			flags = flags | 4;
+		if (IsSquelchActive())
+			flags = flags | 8;
 
 		// Header; the entry and string counts are filled in below
 		m_aBinWords.Insert(VONBIN_MAGIC);
@@ -1997,9 +2263,12 @@ modded class SCR_VONController
 		int count = 0;
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
+			// bit0 SameLanguage, bits 1-2 reserved, bit3 cut off (older plugins only read bit0)
 			int entryFlags = 0;
 			if (container.m_bCachedSameLang)
 				entryFlags = 1;
+			if (container.m_bCutOff)
+				entryFlags = entryFlags | 8;
 			int muffled = container.m_iCachedDecibels;
 
 			m_aBinWords.Insert((container.m_iCachedClientId & 0xFFFF) | ((container.m_iCachedType & 0xFF) << 16) | (entryFlags << 24));

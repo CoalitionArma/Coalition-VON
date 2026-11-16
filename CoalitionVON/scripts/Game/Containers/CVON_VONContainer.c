@@ -58,7 +58,7 @@ class CVON_VONContainer
 	// Vehicle comms, worked out by the listener (not replicated)
 	// The talker is on the same vehicle intercom as us: written as INTERCOM whatever m_eVonType is
 	bool m_bOnIntercom = false;
-	// SPEAKER: the vehicle whose speaker plays this transmission, and how far it carries
+	// SPEAKER: the radio whose speaker plays this transmission (a vehicle's, a carried or dropped radio), and how far it carries
 	RplId m_SpeakerRplId = RplId.Invalid();
 	int m_iSpeakerRange;
 	IEntity m_SpeakerEntity;
@@ -82,6 +82,16 @@ class CVON_VONContainer
 	// Update scheduling (see SCR_VONController): when this sender's muffling traces are next due.
 	// Occlusion changes slowly, so it runs a few times a second rather than every frame.
 	float m_fNextOcclusionTime = 0;
+
+	// Radio immersion, worked out by the listener (not replicated; see SCR_VONController)
+	// Terrain between sender and receiver: 1 = clear path, lower = weaker signal
+	float m_fTerrainFactor = 1;
+	float m_fNextTerrainTime = 0;
+	vector m_vTerrainFrom;
+	vector m_vTerrainTo;
+	// The sender was killed or knocked out mid-transmission: kept a moment so the plugin plays the cut-off
+	bool m_bCutOff = false;
+	bool m_bCachedCutOff = false;
 
 	static bool Extract(CVON_VONContainer instance, ScriptCtx ctx, SSnapSerializerBase snapshot)
 	{	
