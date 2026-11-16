@@ -83,6 +83,19 @@ class CVON_VONContainer
 	// Occlusion changes slowly, so it runs a few times a second rather than every frame.
 	float m_fNextOcclusionTime = 0;
 
+	// Radio immersion, worked out by the listener (not replicated; see SCR_VONController)
+	// Terrain between sender and receiver: 1 = clear path, lower = weaker signal
+	float m_fTerrainFactor = 1;
+	float m_fNextTerrainTime = 0;
+	vector m_vTerrainFrom;
+	vector m_vTerrainTo;
+	// Another transmission on the same frequency at the same time: COLLISION_* (CVON_SCR_VONController)
+	int m_iCollision = 0;
+	int m_iCachedCollision = 0;
+	// The sender was killed or knocked out mid-transmission: kept a moment so the plugin plays the cut-off
+	bool m_bCutOff = false;
+	bool m_bCachedCutOff = false;
+
 	static bool Extract(CVON_VONContainer instance, ScriptCtx ctx, SSnapSerializerBase snapshot)
 	{	
 		snapshot.SerializeBytes(instance.m_eVonType, 4);

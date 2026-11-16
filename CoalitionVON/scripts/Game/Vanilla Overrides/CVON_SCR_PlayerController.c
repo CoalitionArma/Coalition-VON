@@ -513,7 +513,8 @@ modded class SCR_PlayerController
 			vonContainerLocal.m_sFactionKey = VONContainer.m_sFactionKey;
 			vonContainerLocal.m_iMaxDistance = maxDistance;
 			vonContainerLocal.m_vSenderLocation = senderOrigin;
-			return;	
+			vonContainerLocal.m_bCutOff = false; // a new transmission replaces a cut-off still showing
+			return;
 		}
 		VONContainer.m_iMaxDistance = maxDistance;
 		VONContainer.m_vSenderLocation = senderOrigin;
@@ -552,6 +553,7 @@ modded class SCR_PlayerController
 		container.m_iSpeakerRange = speakerRange;
 		container.m_SpeakerEntity = null;
 		container.m_fNextSpeakerOcclusionTime = 0;
+		container.m_bCutOff = false;
 	}
 
 
@@ -577,13 +579,62 @@ modded class SCR_PlayerController
 	}
 
 	//==========================================================================================================================================================================
-	[RplRpc(RplChannel.Reliable, RplRcver.Owner)] 
+	[RplRpc(RplChannel.Reliable, RplRcver.Owner)]
 	void RpcAsk_RemoveLocalVONBroadcast(int playerIdToRemove)
 	{
 		if (!m_aLocalEntries.Contains(playerIdToRemove))
 			return;
 
+		// A cut-off entry stays a moment longer so the plugin can play it (RemoveCutOffEntry takes it)
+		CVON_VONContainer container = m_aLocalEntries.Get(playerIdToRemove);
+		if (container && container.m_bCutOff)
+			return;
+
 		m_aLocalEntries.Remove(playerIdToRemove);
+	}
+
+	//Cut-off: the sender was killed or knocked out mid-transmission. Like a release, but every receiver
+	//hears the radio cut off with a burst of static instead of a clean squelch tail.
+	//==========================================================================================================================================================================
+	void BroadcastCutOffLocalVONToServer(int playerIdToRemove)
+	{
+		Rpc(RpcAsk_BroadcastCutOffLocalVONToServer, playerIdToRemove);
+	}
+
+	//==========================================================================================================================================================================
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	void RpcAsk_BroadcastCutOffLocalVONToServer(int playerIdToRemove)
+	{
+		CVON_VONGameModeComponent.GetInstance().CutOffLocalVONBroadcasts(playerIdToRemove);
+	}
+
+	//Server -> receiver: sent just before the usual remove
+	//==========================================================================================================================================================================
+	void CutOffLocalVONBroadcast(int playerIdToRemove)
+	{
+		Rpc(RpcAsk_CutOffLocalVONBroadcast, playerIdToRemove);
+	}
+
+	//==========================================================================================================================================================================
+	[RplRpc(RplChannel.Reliable, RplRcver.Owner)]
+	void RpcAsk_CutOffLocalVONBroadcast(int playerIdToRemove)
+	{
+		CVON_VONContainer container = m_aLocalEntries.Get(playerIdToRemove);
+		if (!container || (container.m_eVonType != CVON_EVONType.RADIO && container.m_eVonType != CVON_EVONType.SPEAKER))
+			return;
+
+		// Written to VONData as cut off; the plugin plays the burst and silences them
+		container.m_bCutOff = true;
+		GetGame().GetCallqueue().CallLater(RemoveCutOffEntry, SCR_VONController.CUT_OFF_HOLD_MS, false, playerIdToRemove, container);
+	}
+
+	//Takes the cut-off entry away, unless a new transmission from them replaced it in the meantime
+	//==========================================================================================================================================================================
+	protected void RemoveCutOffEntry(int playerId, CVON_VONContainer container)
+	{
+		CVON_VONContainer current = m_aLocalEntries.Get(playerId);
+		if (current && current == container && current.m_bCutOff)
+			m_aLocalEntries.Remove(playerId);
 	}
 
 	//All these are described already in the radio component, this is just how we get the authority to do it from the proxy.

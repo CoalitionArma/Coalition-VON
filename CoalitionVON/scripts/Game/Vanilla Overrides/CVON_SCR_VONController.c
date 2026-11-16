@@ -510,6 +510,140 @@ modded class SCR_VONController
 			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
 	}
 
+	//Terrain between two radios: 1 for a clear line of sight, lower the more hill is in the way. Samples the
+	//terrain height along the path (no traces, so a long path costs a few dozen height lookups) and looks at
+	//how far the hills rise above the line between the two antennas: the highest ridge does most of the
+	//damage, each further ridge and the share of the path in shadow add to it.
+	//==========================================================================================================================================================================
+	float ComputeTerrainFactor(vector from, vector to, float strength)
+	{
+		if (strength <= 0)
+			return 1;
+
+		BaseWorld world = GetGame().GetWorld();
+		if (!world)
+			return 1;
+
+		float distance = vector.DistanceXZ(from, to);
+		if (distance < TERRAIN_SAMPLE_SPACING * 2)
+			return 1;
+
+		int samples = Math.Ceil(distance / TERRAIN_SAMPLE_SPACING);
+		samples = Math.ClampInt(samples, 4, TERRAIN_MAX_SAMPLES);
+		float fromHeight = from[1] + TERRAIN_ANTENNA_HEIGHT;
+		float toHeight = to[1] + TERRAIN_ANTENNA_HEIGHT;
+
+		float maxDepth = 0;
+		int blocked = 0;
+		int ridges = 0;
+		bool inShadow = false;
+		float sampleCount = samples;
+		for (int i = 1; i < samples; i++)
+		{
+			float t = i / sampleCount;
+			float ground = world.GetSurfaceY(Math.Lerp(from[0], to[0], t), Math.Lerp(from[2], to[2], t));
+			float depth = ground - Math.Lerp(fromHeight, toHeight, t);
+			if (depth > 0)
+			{
+				blocked++;
+				if (depth > maxDepth)
+					maxDepth = depth;
+				if (!inShadow)
+					ridges++;
+				inShadow = true;
+			}
+			else
+				inShadow = false;
+		}
+
+		if (blocked == 0)
+			return 1;
+
+		float blockedSamples = blocked;
+		float shadowShare = blockedSamples / (sampleCount - 1);
+		float loss = 0.6 * Math.Clamp(maxDepth / TERRAIN_FULL_BLOCK_DEPTH, 0, 1)
+			+ 0.15 * Math.ClampInt(ridges - 1, 0, 2)
+			+ 0.25 * Math.Clamp(shadowShare * 2, 0, 1);
+		return 1 - Math.Clamp(loss * strength, 0, 0.95);
+	}
+
+	//Terrain factor for an entry, cached: recomputed every TERRAIN_INTERVAL or once an end moved far enough
+	//==========================================================================================================================================================================
+	float GetTerrainFactor(CVON_VONContainer container, vector receiver, vector sender)
+	{
+		if (!m_VONGameModeComponent)
+			return 1;
+		float strength = m_VONGameModeComponent.GetTerrainBlockStrength();
+		if (strength <= 0)
+			return 1;
+
+		bool moved = vector.DistanceSq(receiver, container.m_vTerrainTo) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK
+			|| vector.DistanceSq(sender, container.m_vTerrainFrom) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK;
+		if (m_fTime >= container.m_fNextTerrainTime || moved)
+		{
+			container.m_fTerrainFactor = ComputeTerrainFactor(sender, receiver, strength);
+			container.m_fNextTerrainTime = m_fTime + TERRAIN_INTERVAL;
+			container.m_vTerrainFrom = sender;
+			container.m_vTerrainTo = receiver;
+		}
+		return container.m_fTerrainFactor;
+	}
+
+	//Several transmissions on one frequency at once (same time deviation and key) step on each other, as on an
+	//FM radio: the strongest signal captures the receiver and is heard with a squeal, the others are lost.
+	//Sets m_iCollision on each radio and speaker entry.
+	//==========================================================================================================================================================================
+	protected ref map<string, CVON_VONContainer> m_mStrongestOnNet = new map<string, CVON_VONContainer>();
+	protected ref map<string, int> m_mTransmittersOnNet = new map<string, int>();
+
+	protected void UpdateCollisions()
+	{
+		bool enabled = IsServerSettingOn(CVON_VONGameModeComponent.SETTING_COLLISIONS);
+		m_mStrongestOnNet.Clear();
+		m_mTransmittersOnNet.Clear();
+
+		if (enabled)
+		{
+			foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
+			{
+				string net = CollisionNet(container);
+				if (net.IsEmpty())
+					continue;
+
+				m_mTransmittersOnNet.Set(net, m_mTransmittersOnNet.Get(net) + 1);
+				CVON_VONContainer strongest = m_mStrongestOnNet.Get(net);
+				if (!strongest || container.m_fConnectionQuality > strongest.m_fConnectionQuality)
+					m_mStrongestOnNet.Set(net, container);
+			}
+		}
+
+		foreach (int entryPlayerId, CVON_VONContainer entry: m_PlayerController.m_aLocalEntries)
+		{
+			entry.m_iCollision = COLLISION_NONE;
+			if (!enabled)
+				continue;
+
+			string entryNet = CollisionNet(entry);
+			if (entryNet.IsEmpty() || m_mTransmittersOnNet.Get(entryNet) < 2)
+				continue;
+
+			if (m_mStrongestOnNet.Get(entryNet) == entry)
+				entry.m_iCollision = COLLISION_CAPTURED;
+			else
+				entry.m_iCollision = COLLISION_LOST;
+		}
+	}
+
+	//The net an entry transmits on, or "" for entries that can't collide (direct, intercom, cut off, dead listener)
+	protected string CollisionNet(CVON_VONContainer container)
+	{
+		if (container.m_bCutOff || container.m_bOnIntercom || container.m_sCachedFreq.IsEmpty() || container.m_sCachedFreq == "__unset__")
+			return "";
+		if (container.m_iCachedType != CVON_EVONType.RADIO && container.m_iCachedType != CVON_EVONType.SPEAKER)
+			return "";
+		return string.Format("%1|%2|%3", container.m_sFrequency, container.m_iTimeDeviation, container.m_sFactionKey);
+	}
+
 	//True while the player talks on a radio with "mix game audio" on: the plugin then mixes the game's sound
 	//into the transmission. Direct speech never carries it.
 	//==========================================================================================================================================================================
@@ -568,12 +702,30 @@ modded class SCR_VONController
 
 		// Only radio transmissions were sent to the server (see EOnFixedFrame); direct speech has nothing to remove
 		bool wasRadio = m_CurrentVONContainer.m_eVonType == CVON_EVONType.RADIO;
+		bool cutOff = m_bCutOffOnDeactivate;
+		m_bCutOffOnDeactivate = false;
 		m_bIsBroadcasting = false;
 		m_bHasBroadcasted = true;
 		m_CurrentVONContainer = null;
 
 		if (wasRadio)
-			m_PlayerController.BroadcastRemoveLocalVONToServer(m_PlayerController.GetPlayerId());
+		{
+			if (cutOff)
+				m_PlayerController.BroadcastCutOffLocalVONToServer(m_PlayerController.GetPlayerId());
+			else
+				m_PlayerController.BroadcastRemoveLocalVONToServer(m_PlayerController.GetPlayerId());
+		}
+	}
+
+	//A server setting in force (CVON_ServerSettings); all on outside a CVON game mode
+	//==========================================================================================================================================================================
+	bool IsServerSettingOn(int setting)
+	{
+		if (!m_VONGameModeComponent)
+			m_VONGameModeComponent = CVON_VONGameModeComponent.GetInstance();
+		if (!m_VONGameModeComponent)
+			return true;
+		return m_VONGameModeComponent.IsServerSettingOn(setting);
 	}
 
 	//==========================================================================================================================================================================
@@ -652,6 +804,26 @@ modded class SCR_VONController
 	bool m_bGameAudioSetting = true;
 	bool m_bLastWrittenRadioMix = false;
 	bool m_bLastWrittenGameAudio = false;
+
+	// Radio immersion ("immersion1"): squelch tones, collisions and the cut-off (see UpdateCollisions,
+	// GetTerrainFactor). The server settings switch each one.
+	bool m_bPluginImmersion = false;
+	bool m_bLastWrittenSquelch = false;
+	// The next radio release is a cut-off (killed or knocked out mid-transmission)
+	bool m_bCutOffOnDeactivate = false;
+
+	static const int COLLISION_NONE = 0;
+	static const int COLLISION_CAPTURED = 1;	// strongest of several on the frequency: heard, with a squeal
+	static const int COLLISION_LOST = 2;		// a weaker one: almost nothing gets through
+	static const int CUT_OFF_HOLD_MS = 500;		// how long a cut-off entry stays so the plugin can play it
+
+	// Terrain between radios (GetTerrainFactor)
+	static const float TERRAIN_INTERVAL = 1.0;			// seconds between recomputing a talker's path
+	static const float TERRAIN_MOVE_RECHECK = 25;		// ... or sooner once either end moved this far (m)
+	static const float TERRAIN_SAMPLE_SPACING = 25;	// m between terrain height samples along the path
+	static const int   TERRAIN_MAX_SAMPLES = 96;
+	static const float TERRAIN_ANTENNA_HEIGHT = 1.6;	// m above the position of each radio
+	static const float TERRAIN_FULL_BLOCK_DEPTH = 40;	// m of hill above the line of sight for the full ridge loss
 	// TeamSpeak client IDs currently talking (VONTalking.json). Without it everyone counts as talking.
 	ref set<int> m_TalkingClientIds = new set<int>();
 
@@ -740,6 +912,10 @@ modded class SCR_VONController
 		{
 			if (m_CharacterController.GetLifeState() != ECharacterLifeState.ALIVE)
 			{
+				//Killed or knocked out mid-transmission: listeners hear the radio cut off, not a clean release
+				if (m_CurrentVONContainer && m_CurrentVONContainer.m_eVonType == CVON_EVONType.RADIO && IsServerSettingOn(CVON_VONGameModeComponent.SETTING_CUT_OFF))
+					m_bCutOffOnDeactivate = true;
+
 				if (m_bToggleBuffer)
 				{
 					m_bToggleBuffer = false;
@@ -1056,6 +1232,7 @@ modded class SCR_VONController
 		bool binary = false;
 		bool talking = false;
 		bool gameMix = false;
+		bool immersion = false;
 		SCR_JsonLoadContext info = new SCR_JsonLoadContext();
 		if (info.LoadFromFile(PLUGIN_INFO_FILE))
 		{
@@ -1071,11 +1248,13 @@ modded class SCR_VONController
 				binary = features.Contains("bin1");
 				talking = features.Contains("talking1");
 				gameMix = features.Contains("gamemix1");
+				immersion = features.Contains("immersion1");
 			}
 		}
 		m_bPluginReadsBinary = binary;
 		m_bPluginReportsTalking = talking;
 		m_bPluginMixesGameAudio = gameMix;
+		m_bPluginImmersion = immersion;
 
 		m_TalkingClientIds.Clear();
 		if (!talking)
@@ -1784,7 +1963,8 @@ modded class SCR_VONController
 					 (currentEntryCount != m_iLastWrittenEntryCount) ||
 					 (m_bPluginReadsBinary != m_bLastWrittenBinary) ||
 					 (IsRadioGameAudioActive() != m_bLastWrittenRadioMix) ||
-					 (m_bGameAudioSetting != m_bLastWrittenGameAudio);
+					 (m_bGameAudioSetting != m_bLastWrittenGameAudio) ||
+					 (IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH) != m_bLastWrittenSquelch);
 
 		// Work out each entry. Players who aren't talking are refreshed every SILENT_GAIN_DIVIDER-th tick,
 		// and the muffling traces run on their own slower schedule per sender.
@@ -1849,15 +2029,18 @@ modded class SCR_VONController
 
 			if (container.m_eVonType == CVON_EVONType.RADIO)
 			{
+				vector receiver = GetRadioReceiverOrigin();
+				vector sender = container.m_vSenderLocation;
 				if (container.m_SoundSource)
-					container.m_fConnectionQuality = GetSignalStrength(vector.Distance(GetRadioReceiverOrigin(), container.m_SoundSource.GetOrigin()), container.m_iMaxDistance);
-				else
-					container.m_fConnectionQuality = GetSignalStrength(vector.Distance(GetRadioReceiverOrigin(), container.m_vSenderLocation), container.m_iMaxDistance);
+					sender = container.m_SoundSource.GetOrigin();
+				//Distance sets the signal; hills in the way weaken it further
+				container.m_fConnectionQuality = GetSignalStrength(vector.Distance(receiver, sender), container.m_iMaxDistance) * GetTerrainFactor(container, receiver, sender);
 			}
 			else if (container.m_eVonType == CVON_EVONType.SPEAKER && container.m_SpeakerEntity)
 			{
 				//The vehicle's radio is the receiver: its distance from the sender sets the signal
-				container.m_fConnectionQuality = GetSignalStrength(vector.Distance(container.m_SpeakerEntity.GetOrigin(), container.m_vSenderLocation), container.m_iMaxDistance);
+				vector speakerOrigin = container.m_SpeakerEntity.GetOrigin();
+				container.m_fConnectionQuality = GetSignalStrength(vector.Distance(speakerOrigin, container.m_vSenderLocation), container.m_iMaxDistance) * GetTerrainFactor(container, speakerOrigin, container.m_vSenderLocation);
 			}
 
 			bool sameLanguage = IsSameLanguage(m_PlayerController.GetPlayerId(), container.m_iPlayerId);
@@ -1888,6 +2071,16 @@ modded class SCR_VONController
 			container.m_iCachedType     = outType;
 		}
 
+		// Needs every entry's type and signal from the loop above
+		UpdateCollisions();
+		foreach (int entryPlayerId, CVON_VONContainer entry: m_PlayerController.m_aLocalEntries)
+		{
+			if (entry.m_iCollision != entry.m_iCachedCollision || entry.m_bCutOff != entry.m_bCachedCutOff)
+				dirty = true;
+			entry.m_iCachedCollision = entry.m_iCollision;
+			entry.m_bCachedCutOff = entry.m_bCutOff;
+		}
+
 		if (!dirty)
 			return;
 
@@ -1900,6 +2093,7 @@ modded class SCR_VONController
 		m_bLastWrittenBinary = m_bPluginReadsBinary;
 		m_bLastWrittenRadioMix = IsRadioGameAudioActive();
 		m_bLastWrittenGameAudio = m_bGameAudioSetting;
+		m_bLastWrittenSquelch = IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH);
 	}
 
 	//VONData.json: what every plugin version reads
@@ -1914,9 +2108,18 @@ modded class SCR_VONController
 			VONSave.WriteValue("RadioMix", IsRadioGameAudioActive());
 			VONSave.WriteValue("GameAudio", m_bGameAudioSetting);
 		}
+		if (m_bPluginImmersion)
+		{
+			VONSave.WriteValue("SquelchTones", IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH));
+		}
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
 			VONSave.StartObject(container.m_iCachedClientId.ToString());
+			if (m_bPluginImmersion)
+			{
+				VONSave.WriteValue("Collision", container.m_iCollision);
+				VONSave.WriteValue("CutOff", container.m_bCutOff);
+			}
 			VONSave.SetMaxDecimalPlaces(3);
 			VONSave.WriteValue("VONType", container.m_iCachedType);
 			VONSave.WriteValue("Frequency", container.m_sCachedFreq);
@@ -1978,7 +2181,7 @@ modded class SCR_VONController
 		m_mBinStringIndex.Clear();
 		m_iBinarySeq++;
 
-		// bit0 IsTransmitting, bit1 RadioMix, bit2 GameAudio (older plugins only read bit0)
+		// bit0 IsTransmitting, bit1 RadioMix, bit2 GameAudio, bit3 SquelchTones (older plugins only read bit0)
 		int flags = 0;
 		if (m_bIsBroadcasting)
 			flags = 1;
@@ -1986,6 +2189,8 @@ modded class SCR_VONController
 			flags = flags | 2;
 		if (m_bGameAudioSetting)
 			flags = flags | 4;
+		if (IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH))
+			flags = flags | 8;
 
 		// Header; the entry and string counts are filled in below
 		m_aBinWords.Insert(VONBIN_MAGIC);
@@ -1997,9 +2202,16 @@ modded class SCR_VONController
 		int count = 0;
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
+			// bit0 SameLanguage, bit1 collision captured, bit2 collision lost, bit3 cut off (older plugins only read bit0)
 			int entryFlags = 0;
 			if (container.m_bCachedSameLang)
 				entryFlags = 1;
+			if (container.m_iCollision == COLLISION_CAPTURED)
+				entryFlags = entryFlags | 2;
+			else if (container.m_iCollision == COLLISION_LOST)
+				entryFlags = entryFlags | 4;
+			if (container.m_bCutOff)
+				entryFlags = entryFlags | 8;
 			int muffled = container.m_iCachedDecibels;
 
 			m_aBinWords.Insert((container.m_iCachedClientId & 0xFFFF) | ((container.m_iCachedType & 0xFF) << 16) | (entryFlags << 24));

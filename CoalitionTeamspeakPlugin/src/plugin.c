@@ -440,8 +440,14 @@ typedef struct {
     float         muffledDb;
     float         behindIntensity;
     int           sameLanguage;
+    int           collision;       /* COLLISION_*: another transmission on the same net at once */
+    int           cutOff;          /* the sender was killed or knocked out mid-transmission */
     unsigned long lastUpdateTick;
 } VonEntry;
+
+#define COLLISION_NONE 0
+#define COLLISION_CAPTURED 1 /* strongest on the net: heard, with a heterodyne squeal */
+#define COLLISION_LOST 2     /* a weaker one: almost nothing gets through */
 
 /* -------- Double-buffered snapshots -------- */
 typedef struct {
@@ -507,6 +513,11 @@ static volatile long g_inVonActiveFlag = 0; /* 0/1 set by worker, read by audio 
    g_RadioMix: the player is transmitting on a radio right now with that setting on. */
 static volatile long g_GameAudioEnabled = 0;
 static volatile long g_RadioMix         = 0;
+
+/* Radio immersion, from VONData (worker sets; audio reads). The game zeroes each one the server turns off.
+   g_SquelchTones: play squelch bursts and tails for radio transmissions. */
+static volatile long g_SquelchTones    = 0;
+static int           g_squelchDirty    = 0; /* worker: VON or radio data changed, look for squelch events */
 
 /* Per-client volume modifier state and muting control */
 typedef struct {
@@ -702,6 +713,8 @@ typedef struct {
     Biquad         lp_n, hp_n;   /* static filters */
     PinkNoise      pink;
     RingMod        rm;
+    float          hetPhase;     /* collision squeal: carrier and its slow wobble */
+    float          hetWobble;
 } RadioState;
 
 static RadioState       g_radioStates[STATE_TABLE_SIZE];
@@ -874,6 +887,70 @@ static void radio_color_voice_only(RadioState* st, float* buf, int n, float volu
         if (buf[i] < -1.0f)
             buf[i] = -1.0f;
     }
+}
+
+/* ---------------------------------------------------------------------------
+   Collisions: two transmissions on one net at once. As on an FM radio the strongest captures the receiver
+   and is heard with a heterodyne squeal and more static; the weaker ones are almost entirely lost. The game
+   decides which is which (VonEntry.collision).
+--------------------------------------------------------------------------- */
+#define COLLISION_CAPTURED_QUALITY 0.75f /* signal quality multiplier for the one that's heard */
+#define COLLISION_LOST_QUALITY 0.3f
+#define COLLISION_LOST_VOICE 0.12f       /* what's left of a lost transmission's voice */
+#define HETERODYNE_LEVEL 0.10f
+#define HETERODYNE_HZ 1100.0f
+#define HETERODYNE_SWING_HZ 450.0f       /* the carrier beat drifts up and down by this much */
+#define HETERODYNE_WOBBLE_HZ 0.6f
+
+static inline void collision_adjust(const VonEntry* e, float* quality, float* voiceMul)
+{
+    if (e->collision == COLLISION_CAPTURED) {
+        *quality *= COLLISION_CAPTURED_QUALITY;
+    } else if (e->collision == COLLISION_LOST) {
+        *quality *= COLLISION_LOST_QUALITY;
+        *voiceMul *= COLLISION_LOST_VOICE;
+    }
+}
+
+/* Adds the squeal of two carriers beating against each other (captured transmissions only) */
+static void collision_heterodyne(RadioState* st, const VonEntry* e, float* buf, int n)
+{
+    if (e->collision != COLLISION_CAPTURED)
+        return;
+    const float wobbleStep = TWO_PI_F * HETERODYNE_WOBBLE_HZ / TS_SAMPLE_RATE;
+    for (int i = 0; i < n; ++i) {
+        st->hetWobble = wrap_pi(st->hetWobble + wobbleStep);
+        const float hz = HETERODYNE_HZ + HETERODYNE_SWING_HZ * fast_sinf(st->hetWobble);
+        st->hetPhase   = wrap_pi(st->hetPhase + TWO_PI_F * hz / TS_SAMPLE_RATE);
+        /* A little amplitude flutter so it doesn't sound like a test tone */
+        const float flutter = 0.75f + 0.25f * fast_sinf(st->hetWobble * 7.0f);
+        buf[i] += HETERODYNE_LEVEL * flutter * fast_sinf(st->hetPhase);
+    }
+}
+
+/* The local radio that receives this transmission (same frequency, time deviation and key), if any */
+static int match_local_radio(const VonEntry* e, float* vol01, int* stereo)
+{
+    const RadioSnapshot* rSnap = get_active_radio();
+    if (!rSnap || !rSnap->loaded)
+        return 0;
+    for (size_t i = 0; i < rSnap->count; ++i) {
+        const RadioLocal* r = &rSnap->list[i];
+        if (strcmp(r->freq, e->txFreq) != 0)
+            continue;
+        if (!(r->timeDev == INT_MIN || e->txTimeDev == INT_MIN || r->timeDev == e->txTimeDev))
+            continue;
+        const int rf = (r->faction[0] && strcmp(r->faction, "0") != 0);
+        const int vf = (e->txFaction[0] && strcmp(e->txFaction, "0") != 0);
+        if (rf && vf && strcmp(r->faction, e->txFaction) != 0)
+            continue;
+        if (vol01)
+            *vol01 = (float)r->volStep / 9.0f;
+        if (stereo)
+            *stereo = r->stereo;
+        return 1;
+    }
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1437,7 +1514,9 @@ static void apply_speaker_dsp(anyID clientID, const VonEntry* e, short* samples,
 
     RadioState* st = get_radio_state(clientID);
     if (st) {
-        const float q = clampf(e->connQ, 0.0f, 1.0f);
+        float q        = clampf(e->connQ, 0.0f, 1.0f);
+        float voiceMul = 1.0f;
+        collision_adjust(e, &q, &voiceMul);
         int processed = 0;
         while (processed < sampleCount) {
             int n = sampleCount - processed;
@@ -1456,6 +1535,9 @@ static void apply_speaker_dsp(anyID clientID, const VonEntry* e, short* samples,
             }
 
             radio_color_voice_only(st, voice, n, 1.0f, q);
+            for (int i = 0; i < n; ++i)
+                voice[i] *= voiceMul;
+            collision_heterodyne(st, e, voice, n);
             radio_make_static(st, hiss, n, q, q);
 
             for (int i = 0; i < n; ++i) {
@@ -1508,6 +1590,10 @@ static int load_von_into(VonSnapshot* dst)
     cJSON* gameAudio = cJSON_GetObjectItem(root, "GameAudio");
     InterlockedExchange(&g_RadioMix, cJSON_IsTrue(mix) ? 1 : 0);
     InterlockedExchange(&g_GameAudioEnabled, cJSON_IsTrue(gameAudio) ? 1 : 0);
+
+    /* Only written for plugins that list "immersion1"; absent means off */
+    cJSON* squelch = cJSON_GetObjectItem(root, "SquelchTones");
+    InterlockedExchange(&g_SquelchTones, cJSON_IsTrue(squelch) ? 1 : 0);
 
     cJSON* it;
     cJSON_ArrayForEach(it, root)
@@ -1565,6 +1651,12 @@ static int load_von_into(VonSnapshot* dst)
         else
             e.sameLanguage = 1; /* default to same language if not specified */
 
+        v = cJSON_GetObjectItem(it, "Collision");
+        if (cJSON_IsNumber(v) && v->valueint >= COLLISION_NONE && v->valueint <= COLLISION_LOST)
+            e.collision = v->valueint;
+        v = cJSON_GetObjectItem(it, "CutOff");
+        e.cutOff = cJSON_IsTrue(v) ? 1 : 0;
+
         e.lastUpdateTick = GetTickCount();
 
         dst->entries[count++] = e;
@@ -1588,12 +1680,13 @@ static int load_von_into(VonSnapshot* dst)
    reads it (VONPluginInfo.json). All values little-endian, packed in 4-byte words:
 
      Header   w0 magic 'CVON' (0x4E4F5643)
-              w1 version u16 | flags u16 (bit0 = IsTransmitting, bit1 = RadioMix, bit2 = GameAudio;
-                                          older plugins only look at bit0)
+              w1 version u16 | flags u16 (bit0 = IsTransmitting, bit1 = RadioMix, bit2 = GameAudio,
+                                          bit3 = SquelchTones; older plugins only look at bit0)
               w2 seq u32
               w3 entryCount u16 | entryWords u16
               w4 stringCount u16 | reserved u16
-     Entry    e0 tsClientId u16 | VONType u8 | flags u8 (bit0 = SameLanguage)
+     Entry    e0 tsClientId u16 | VONType u8 | flags u8 (bit0 = SameLanguage, bit1 = collision captured,
+                                                         bit2 = collision lost, bit3 = cut off)
               e1 leftGain u16 (x10000) | rightGain u16 (x10000)
               e2 frequency string index u16 | faction string index u16 (0xFFFF = none)
               e3 timeDeviation i32 (0x7FFFFFFF = not sent)
@@ -1640,11 +1733,13 @@ static int load_von_bin_into(VonSnapshot* dst)
     const int      transmitting = (w1 >> 16) & 1;
     const int      radioMix     = (w1 >> 17) & 1;
     const int      gameAudio    = (w1 >> 18) & 1;
+    const int      squelch      = (w1 >> 19) & 1;
     const uint32_t seq          = rd_u32(buf + 8);
     const uint32_t w3           = rd_u32(buf + 12);
     const size_t   entryCount   = w3 & 0xFFFF;
     const size_t   entryWords   = (w3 >> 16) & 0xFFFF;
-    const size_t   stringCount  = rd_u32(buf + 16) & 0xFFFF;
+    const uint32_t w4           = rd_u32(buf + 16);
+    const size_t   stringCount  = w4 & 0xFFFF;
     if (entryWords < VONBIN_MIN_ENTRY_WORDS || entryCount > MAX_TRACKED || stringCount > VONBIN_MAX_STRINGS)
         return -1;
 
@@ -1683,6 +1778,8 @@ static int load_von_bin_into(VonSnapshot* dst)
             continue;
         v.type         = von_type_from_int((int)((e0 >> 16) & 0xFF));
         v.sameLanguage = (e0 >> 24) & 1;
+        v.collision    = ((e0 >> 25) & 1) ? COLLISION_CAPTURED : (((e0 >> 26) & 1) ? COLLISION_LOST : COLLISION_NONE);
+        v.cutOff       = (e0 >> 27) & 1;
         v.leftGain     = (float)(e1 & 0xFFFF) / 10000.0f;
         v.rightGain    = (float)((e1 >> 16) & 0xFFFF) / 10000.0f;
         const uint32_t td = rd_u32(e + 12);
@@ -1709,6 +1806,7 @@ static int load_von_bin_into(VonSnapshot* dst)
     g_IsTransmitting = transmitting;
     InterlockedExchange(&g_RadioMix, radioMix);
     InterlockedExchange(&g_GameAudioEnabled, gameAudio);
+    InterlockedExchange(&g_SquelchTones, squelch);
     dst->count     = count;
     dst->loaded    = 1;
     dst->buildTick = now;
@@ -2383,6 +2481,7 @@ static void reload_von_if_changed(void)
         InterlockedExchange(&g_vonActiveIdx, writeIdx); /* publish */
         g_vonChangedSinceMute = 1;
         g_vonRetries          = 0;
+        g_squelchDirty        = 1;
         return;
     }
 
@@ -2397,6 +2496,280 @@ static void reload_von_if_changed(void)
     }
 }
 
+/* ---------------------------------------------------------------------------
+   Squelch: radio traffic opens with a short burst of noise and closes with a squelch tail, as an FM set
+   does when a carrier comes and goes. A transmission cut off by the sender's death or knock-out ends in a
+   harsh burst of static instead. The worker spots transmissions starting and ending between VONData
+   updates (radio talkers that one of our radios receives) and queues them; the mixed playback callback
+   plays them, panned to the ear of the radio that received them and at its volume.
+
+   Open and close sounds are a server setting (g_SquelchTones); the cut-off has its own, which the game
+   applies by not marking cut-offs at all.
+--------------------------------------------------------------------------- */
+enum { SQ_OPEN = 0, SQ_CLOSE = 1, SQ_CUT = 2 };
+
+typedef struct {
+    int   kind;
+    float vol01;
+    int   stereo; /* 0 both, 1 right, 2 left (RadioData) */
+    float quality;
+} SquelchEvent;
+
+#define SQ_QUEUE_LEN 32
+#define SQ_TRACK_MAX 256
+
+static SquelchEvent     g_sqQueue[SQ_QUEUE_LEN];
+static int              g_sqQueueHead = 0, g_sqQueueCount = 0;
+static CRITICAL_SECTION g_sqLock;
+
+typedef struct {
+    anyID id;
+    float vol01;
+    int   stereo;
+    float quality;
+    int   cutOff;
+} SquelchTrack;
+
+static SquelchTrack g_sqPrev[SQ_TRACK_MAX];
+static int          g_sqPrevCount = 0;
+
+static void squelch_push(int kind, const SquelchTrack* t)
+{
+    EnterCriticalSection(&g_sqLock);
+    if (g_sqQueueCount < SQ_QUEUE_LEN) {
+        SquelchEvent* ev = &g_sqQueue[(g_sqQueueHead + g_sqQueueCount) % SQ_QUEUE_LEN];
+        ev->kind         = kind;
+        ev->vol01        = t->vol01;
+        ev->stereo       = t->stereo;
+        ev->quality      = t->quality;
+        g_sqQueueCount++;
+    }
+    LeaveCriticalSection(&g_sqLock);
+}
+
+static int squelch_pop(SquelchEvent* out)
+{
+    int got = 0;
+    EnterCriticalSection(&g_sqLock);
+    if (g_sqQueueCount > 0) {
+        *out          = g_sqQueue[g_sqQueueHead];
+        g_sqQueueHead = (g_sqQueueHead + 1) % SQ_QUEUE_LEN;
+        g_sqQueueCount--;
+        got = 1;
+    }
+    LeaveCriticalSection(&g_sqLock);
+    return got;
+}
+
+static const SquelchTrack* squelch_find(const SquelchTrack* list, int count, anyID id)
+{
+    for (int i = 0; i < count; ++i)
+        if (list[i].id == id)
+            return &list[i];
+    return NULL;
+}
+
+/* Worker: after the VON or radio data changed, queue what started, ended or was cut off */
+static void update_squelch_events(void)
+{
+    if (!InterlockedCompareExchange(&g_inVonActiveFlag, 0, 0)) {
+        g_sqPrevCount = 0;
+        return;
+    }
+
+    SquelchTrack cur[SQ_TRACK_MAX];
+    int          curCount = 0;
+    const VonSnapshot* snap = get_active_von();
+    if (snap && snap->loaded) {
+        for (size_t i = 0; i < snap->count && curCount < SQ_TRACK_MAX; ++i) {
+            const VonEntry* e = &snap->entries[i];
+            if (e->type != VON_RADIO)
+                continue;
+            SquelchTrack t;
+            if (!match_local_radio(e, &t.vol01, &t.stereo))
+                continue;
+            t.id      = e->id;
+            t.quality = clampf(e->connQ, 0.0f, 1.0f);
+            t.cutOff  = e->cutOff;
+            cur[curCount++] = t;
+        }
+    }
+
+    const int tones = InterlockedCompareExchange(&g_SquelchTones, 0, 0) != 0;
+    for (int i = 0; i < g_sqPrevCount; ++i) {
+        const SquelchTrack* p   = &g_sqPrev[i];
+        const SquelchTrack* now = squelch_find(cur, curCount, p->id);
+        if (!now) {
+            if (!p->cutOff && tones)
+                squelch_push(SQ_CLOSE, p); /* released (a cut-off already played its burst) */
+        } else if (now->cutOff && !p->cutOff) {
+            squelch_push(SQ_CUT, now);
+        }
+    }
+    for (int i = 0; i < curCount; ++i) {
+        if (!cur[i].cutOff && tones && !squelch_find(g_sqPrev, g_sqPrevCount, cur[i].id))
+            squelch_push(SQ_OPEN, &cur[i]);
+    }
+
+    memcpy(g_sqPrev, cur, sizeof(SquelchTrack) * (size_t)curCount);
+    g_sqPrevCount = curCount;
+}
+
+/* Audio thread: the sounds playing now */
+#define SQ_VOICES 8
+#define SQ_OPEN_LEVEL 0.50f  /* peaks well under the voice; it lasts a few tens of ms */
+#define SQ_CLOSE_LEVEL 0.38f /* about 5 dB under radio voice */
+#define SQ_CUT_LEVEL 0.55f   /* close to radio voice: it should be startling */
+
+typedef struct {
+    int          active;
+    int          kind;
+    float        level;
+    int          stereo;
+    int          pos;
+    int          len;
+    float        gate;      /* cut-off: static drops in and out */
+    int          gateLeft;
+    Biquad       lp, hp;
+    PinkNoise    pink;
+} SquelchVoice;
+
+static SquelchVoice g_sqVoices[SQ_VOICES];
+static unsigned     g_sqSeed = 0x9E3779B9u;
+
+static void squelch_start_voice(const SquelchEvent* ev)
+{
+    SquelchVoice* v = NULL;
+    for (int i = 0; i < SQ_VOICES; ++i) {
+        if (!g_sqVoices[i].active) {
+            v = &g_sqVoices[i];
+            break;
+        }
+    }
+    if (!v)
+        return; /* that many at once: skip this one */
+
+    memset(v, 0, sizeof(*v));
+    const float weak = 1.0f - clampf(ev->quality, 0.0f, 1.0f);
+    const float vol  = clampf(ev->vol01, 0.0f, 1.0f);
+    v->kind   = ev->kind;
+    v->stereo = ev->stereo;
+    switch (ev->kind) {
+    case SQ_OPEN:
+        v->len   = (int)(TS_SAMPLE_RATE * (0.05f + 0.03f * weak));
+        v->level = SQ_OPEN_LEVEL * vol;
+        break;
+    case SQ_CLOSE:
+        v->len   = (int)(TS_SAMPLE_RATE * (0.13f + 0.12f * weak)); /* weak signals have a longer, louder tail */
+        v->level = SQ_CLOSE_LEVEL * vol * (0.65f + 0.35f * weak);
+        break;
+    default:
+        v->len   = (int)(TS_SAMPLE_RATE * 0.34f);
+        v->level = SQ_CUT_LEVEL * vol;
+        v->gate  = 1.0f;
+        break;
+    }
+    g_sqSeed = g_sqSeed * 1664525u + 1013904223u;
+    pink_init(&v->pink, g_sqSeed);
+    biquad_calc_lowpass(&v->lp, TS_SAMPLE_RATE, RADIO_LP_HZ, RADIO_LP_Q);
+    biquad_calc_highpass(&v->hp, TS_SAMPLE_RATE, RADIO_HP_HZ, RADIO_HP_Q);
+    v->active = v->len > 0;
+}
+
+/* One sample of a voice, already band-limited like the radio */
+static float squelch_voice_tick(SquelchVoice* v)
+{
+    const float t     = (float)v->pos / (float)v->len; /* 0..1 */
+    float       env   = 1.0f;
+    float       noise = 0.6f * pink_tick(&v->pink) + 0.4f * white_signed(&v->pink.rng);
+
+    if (v->kind == SQ_OPEN) {
+        /* Sharp click of a carrier coming up, gone in a few tens of ms */
+        const float attack = clampf((float)v->pos / (TS_SAMPLE_RATE * 0.0015f), 0.0f, 1.0f);
+        env = attack * expf(-(float)v->pos / (TS_SAMPLE_RATE * 0.012f));
+    } else if (v->kind == SQ_CLOSE) {
+        /* "Kssh": up fast, holds, then dies away */
+        const float attack = clampf((float)v->pos / (TS_SAMPLE_RATE * 0.003f), 0.0f, 1.0f);
+        env = attack * (t < 0.7f ? 1.0f : (1.0f - t) / 0.3f);
+    } else {
+        /* Cut-off: harsh, crackling static that drops in and out, then stops dead */
+        if (--v->gateLeft <= 0) {
+            v->gateLeft = (int)(TS_SAMPLE_RATE * (0.012f + 0.02f * frand_u(&v->pink.rng)));
+            v->gate     = (frand_u(&v->pink.rng) < 0.3f) ? 0.15f : 1.0f;
+        }
+        if (frand_u(&v->pink.rng) < 0.004f)
+            noise += 2.5f * white_signed(&v->pink.rng); /* crackle */
+        noise = foldback_sample(noise * 2.0f, 0.5f);
+        env   = v->gate * (t < 0.88f ? 1.0f : (1.0f - t) / 0.12f);
+    }
+
+    float s = biquad_tick(&v->lp, noise);
+    s       = biquad_tick(&v->hp, s);
+    v->pos++;
+    if (v->pos >= v->len)
+        v->active = 0;
+    return s * env * v->level;
+}
+
+/* Mixed playback: adds the queued squelch sounds to what TeamSpeak is about to play */
+static void squelch_render(short* samples, int sampleCount, int channels, const unsigned int* channelSpeakerArray, unsigned int* channelFillMask)
+{
+    SquelchEvent ev;
+    while (squelch_pop(&ev))
+        squelch_start_voice(&ev);
+
+    int anyActive = 0;
+    for (int i = 0; i < SQ_VOICES; ++i)
+        anyActive |= g_sqVoices[i].active;
+    if (!anyActive || !samples || sampleCount <= 0 || channels <= 0)
+        return;
+
+    /* Which channels are front left and right (TeamSpeak may hand us more than stereo) */
+    int left = -1, right = -1;
+    for (int ch = 0; ch < channels && channelSpeakerArray; ++ch) {
+        if (channelSpeakerArray[ch] == SPEAKER_FRONT_LEFT && left < 0)
+            left = ch;
+        else if (channelSpeakerArray[ch] == SPEAKER_FRONT_RIGHT && right < 0)
+            right = ch;
+    }
+    if (left < 0 || right < 0) {
+        left  = 0;
+        right = (channels > 1) ? 1 : 0;
+    }
+
+    /* A channel TeamSpeak left empty holds undefined data: clear it before adding to it */
+    const int targets[2] = {left, right};
+    for (int k = 0; k < 2; ++k) {
+        const int ch = targets[k];
+        if (channelFillMask && !(*channelFillMask & (1u << ch))) {
+            for (int i = 0; i < sampleCount; ++i)
+                samples[i * channels + ch] = 0;
+            *channelFillMask |= (1u << ch);
+        }
+    }
+
+    for (int i = 0; i < sampleCount; ++i) {
+        float L = 0.0f, R = 0.0f;
+        for (int k = 0; k < SQ_VOICES; ++k) {
+            SquelchVoice* v = &g_sqVoices[k];
+            if (!v->active)
+                continue;
+            const float s = squelch_voice_tick(v);
+            if (v->stereo != 1)
+                L += s;
+            if (v->stereo != 2)
+                R += s;
+        }
+        short* frame = samples + (size_t)i * (size_t)channels;
+        if (left == right) {
+            frame[left] = clamp_i16(soft_limit((float)frame[left] / 32768.0f + 0.5f * (L + R)) * 32767.0f);
+        } else {
+            frame[left]  = clamp_i16(soft_limit((float)frame[left] / 32768.0f + L) * 32767.0f);
+            frame[right] = clamp_i16(soft_limit((float)frame[right] / 32768.0f + R) * 32767.0f);
+        }
+    }
+}
+
 static void reload_radio_if_changed(void)
 {
     FILETIME wt;
@@ -2404,9 +2777,10 @@ static void reload_radio_if_changed(void)
         return;
     const long readIdx  = InterlockedCompareExchange(&g_radioActiveIdx, 0, 0);
     const long writeIdx = (readIdx ^ 1) & 1;
-    if (load_radio_into(&g_RadioSnap[writeIdx]))
+    if (load_radio_into(&g_RadioSnap[writeIdx])) {
         InterlockedExchange(&g_radioActiveIdx, writeIdx);
-    else
+        g_squelchDirty = 1;
+    } else
         g_radioWatch.loadedOnce = 0; /* retry next tick */
 }
 
@@ -2419,8 +2793,10 @@ static void reload_radio_if_changed(void)
    VONTalking.json     TeamSpeak client IDs currently talking; the game updates silent players less often.
 --------------------------------------------------------------------------- */
 /* gamemix1: reads RadioMix / GameAudio (VONData.bin flags bits 1-2, or the JSON keys) and mixes game
-   audio into radio transmissions */
-#define PLUGIN_FEATURES "bin1|talking1|heartbeat1|comms1|gamemix1"
+   audio into radio transmissions.
+   immersion1: reads SquelchTones (flags bit 3) and per entry the
+   collision and cut-off flags (entry flags bits 1-3), or the matching JSON keys */
+#define PLUGIN_FEATURES "bin1|talking1|heartbeat1|comms1|gamemix1|immersion1"
 #define MAX_TALKING 256
 
 static char             g_InfoPath[PATH_BUFSIZE]    = {0};
@@ -2829,6 +3205,10 @@ static unsigned long WINAPI worker_main(LPVOID param)
         /* ---------------- Fast path: every wake ---------------- */
         reload_von_if_changed();
         reload_radio_if_changed();
+        if (g_squelchDirty) {
+            g_squelchDirty = 0;
+            update_squelch_events();
+        }
         apply_mic_state(sch, g_SD_inGame && heartbeatOk);
         write_talking_if_dirty(now);
 
@@ -2937,6 +3317,13 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
     InitializeCriticalSection(&g_directLock);
     InitializeCriticalSection(&g_radioLock);
     InitializeCriticalSection(&g_talkLock);
+    InitializeCriticalSection(&g_sqLock);
+    g_sqQueueHead  = 0;
+    g_sqQueueCount = 0;
+    g_sqPrevCount  = 0;
+    g_squelchDirty = 0;
+    memset(g_sqVoices, 0, sizeof(g_sqVoices));
+    InterlockedExchange(&g_SquelchTones, 0);
     memset((void*)g_directStates, 0, sizeof(g_directStates));
     memset((void*)g_radioStates, 0, sizeof(g_radioStates));
     g_talkingCount = 0;
@@ -3069,6 +3456,7 @@ PLUGINS_EXPORTDLL void ts3plugin_shutdown()
     DeleteCriticalSection(&g_directLock);
     DeleteCriticalSection(&g_radioLock);
     DeleteCriticalSection(&g_talkLock);
+    DeleteCriticalSection(&g_sqLock);
 }
 
 /* ---------------------------------------------------------------------------
@@ -3344,34 +3732,22 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
     */
     (void)age;
 
+    /* Cut off mid-transmission: the squelch player has the burst; nothing more of their voice */
+    if (e->cutOff && (e->type == VON_RADIO || e->type == VON_SPEAKER)) {
+        silence_samples(samples, sampleCount, channels);
+        return;
+    }
+
     /* ----------------------------- RADIO talkers ----------------------------- */
     if (e->type == VON_RADIO) {
-        float                vol01    = 0.0f;
-        int                  stereo   = 0;
-        const RadioSnapshot* rSnap    = get_active_radio();
-        const int            hasRadio = (rSnap && rSnap->loaded) ? 1 : 0;
-        int                  matched  = 0;
-
-        if (hasRadio) {
-            for (size_t i = 0; i < rSnap->count; ++i) {
-                RadioLocal* r = (RadioLocal*)&rSnap->list[i];
-                if (strcmp(r->freq, e->txFreq) != 0)
-                    continue;
-                if (!(r->timeDev == INT_MIN || e->txTimeDev == INT_MIN || r->timeDev == e->txTimeDev))
-                    continue;
-                int rf = (r->faction[0] && strcmp(r->faction, "0") != 0);
-                int vf = (e->txFaction[0] && strcmp(e->txFaction, "0") != 0);
-                if (rf && vf && strcmp(r->faction, e->txFaction) != 0)
-                    continue;
-                vol01   = (float)r->volStep / 9.0f;
-                stereo  = r->stereo;
-                matched = 1;
-                break;
-            }
-        }
+        float vol01   = 0.0f;
+        int   stereo  = 0;
+        const int matched = match_local_radio(e, &vol01, &stereo);
 
         if (matched) {
-            const float q  = clampf(e->connQ, 0.0f, 1.0f);
+            float q        = clampf(e->connQ, 0.0f, 1.0f);
+            float voiceMul = 1.0f;
+            collision_adjust(e, &q, &voiceMul);
             RadioState* st = get_radio_state(clientID);
             if (!st || samples_all_zero(samples, sampleCount * channels))
                 return; /* state table full, or a silent buffer: nothing to colour */
@@ -3407,9 +3783,10 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
 
                 radio_color_voice_only(st, voice, n, vol01, q);
 
-                const float voiceGain = clampf(vol01, 0.0f, 1.0f); // quality affects FX/noise, not loudness
+                const float voiceGain = clampf(vol01, 0.0f, 1.0f) * voiceMul; // quality affects FX/noise, not loudness
                 for (int i = 0; i < n; ++i)
                     voice[i] *= voiceGain;
+                collision_heterodyne(st, e, voice, n);
 
                 radio_make_static(st, hiss, n, q, q);
 
@@ -3490,12 +3867,10 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
 PLUGINS_EXPORTDLL void ts3plugin_onEditMixedPlaybackVoiceDataEvent(uint64 sch, short* samples, int sampleCount, int channels, const unsigned int* channelSpeakerArray, unsigned int* channelFillMask)
 {
     (void)sch;
-    (void)samples;
-    (void)sampleCount;
-    (void)channels;
-    (void)channelSpeakerArray;
-    (void)channelFillMask;
-    /* Intentionally no-op to avoid "messing with volume". All shaping is in per-client callback. */
+    /* Voices are shaped per talker; this only adds the squelch sounds (squelch_render) */
+    if (InterlockedCompareExchange(&g_inVonActiveFlag, 0, 0) == 0)
+        return;
+    squelch_render(samples, sampleCount, channels, channelSpeakerArray, channelFillMask);
 }
 
 /* ---------------------------------------------------------------------------
@@ -3534,8 +3909,11 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditCapturedVoiceDataEvent(uint64 sch, short*
 {
     (void)sch;
 
+    if (!samples || sampleCount <= 0 || channels <= 0 || !edited)
+        return;
+
     const int mixing = InterlockedCompareExchange(&g_RadioMix, 0, 0) && InterlockedCompareExchange(&g_inVonActiveFlag, 0, 0);
-    if (!mixing || !samples || sampleCount <= 0 || channels <= 0 || !edited) {
+    if (!mixing) {
         g_mix.active = 0;
         return;
     }

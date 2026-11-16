@@ -59,6 +59,36 @@ When leaving the game, the plugin returns the player to their previous channel.
 
 - Any changes to Server Settings only take effect after a server restart.
 
+# CVON server settings (server config)
+
+Server admins set CVON's gameplay settings in the Arma Reforger server config, the same way as ACE: in the `missionHeader` object under `game.gameProperties`. Next to ACE's `m_ACE_Settings`, add `m_CVON_Settings`:
+
+```json
+"missionHeader": {
+    "m_CVON_Settings": {
+        "m_eRadioGameAudio": 0,
+        "m_bTerrainBlocksRadio": true,
+        "m_fTerrainBlockStrength": 1.0,
+        "m_bRadioCollisions": true,
+        "m_bSquelchTones": true,
+        "m_bTransmissionCutOff": true
+    }
+}
+```
+
+| Field | Type, default | What it does |
+|---|---|---|
+| `m_eRadioGameAudio` | int, `0` | Mixing game audio into radio transmissions. `0`: each player's own setting (settings menu, **Coalition VON** tab). `1`: on for everyone. `2`: off for everyone. Players see the server's choice, greyed out, on that tab. |
+| `m_bTerrainBlocksRadio` | bool, `true` | Hills and mountains between sender and receiver weaken radio signals. |
+| `m_fTerrainBlockStrength` | float 0–2, `1.0` | How much terrain weakens them: `0` none, `1` normal, `2` double. |
+| `m_bRadioCollisions` | bool, `true` | Two players transmitting on the same net at once step on each other. The stronger signal is heard with a squeal, and the weaker is lost. |
+| `m_bSquelchTones` | bool, `true` | Listeners hear a squelch burst when a transmission opens and a squelch tail when it closes. |
+| `m_bTransmissionCutOff` | bool, `true` | A radio operator killed or knocked out mid-transmission is cut off with a burst of static. |
+
+- **One source at a time:** CVON reads the whole object from one place, as ACE does. A field left out of the server config takes the default above, not the mission's value. Without `m_CVON_Settings` in the server config, the mission's own settings apply (`m_MissionSettings` on the world's `CVON_VONGameModeComponent`), and the defaults apply without either.
+- **Read once:** the server reads it from the first mission it loads, as ACE does. Later scenario changes keep using it, because their mission headers don't carry the server config's overrides. Restart the server after changing it.
+- **Clients need nothing:** the server sends the settings in force to every player.
+
 # For developers: how the game and the plugin talk
 
 The game and the TeamSpeak plugin exchange small files in the client's profile folder (`Documents\My Games\ArmaReforger\profile`). The plugin wakes up whenever one of them changes.
@@ -69,7 +99,7 @@ The game and the TeamSpeak plugin exchange small files in the client's profile f
 | `VONData.json` / `VONData.bin` | game, ~20 times a second (immediately on push-to-talk) | Everyone the player can hear: stereo gains, muffling, radio frequency and quality, `IsTransmitting`. The plugin uses whichever was written last. |
 | `RadioData.json` | game, when one of the player's radios changes | The player's radios: frequency, volume, ear, encryption key |
 | `VONHeartbeat.json` | game, every second | Liveness. If it stops while in game (crash), the plugin closes the mic after 3 s and leaves the VON channel after 10 s. |
-| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`, `gamemix1`). The game only writes `VONData.bin` while this lists `bin1`, and only adds `RadioMix` / `GameAudio` to `VONData.json` while it lists `gamemix1`. |
+| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`, `gamemix1`, `immersion1`). The game only writes `VONData.bin` while this lists `bin1`. It only adds `RadioMix` / `GameAudio` to `VONData.json` while it lists `gamemix1`, and the radio immersion keys while it lists `immersion1`. |
 | `VONTalking.json` | plugin, while in game | TeamSpeak client IDs currently talking; the game refreshes players who aren't talking less often. |
 
 `VONData.bin` is the same data as `VONData.json` packed into fixed records. Its layout is documented in `load_von_bin_into` (plugin.c) and written by `WriteVONDataBinary` (CVON_SCR_VONController.c); change both together and bump the format version.
@@ -93,6 +123,19 @@ While a player talks on a radio, the plugin mixes what their game is playing (gu
 - **Capture** (`cvon_gameaudio.c`): Windows per-process loopback of the Arma Reforger process (`ArmaReforgerSteam*.exe`, or Workbench when playing in it), so TeamSpeak and other programs are never recorded. Needs Windows 10 version 2004 or later. Elsewhere the capture fails, the plugin retries with a growing delay, and transmissions are plain voice. The capture runs while in game with the setting on, so it is ready when the player keys up.
 - **Mixing** (`ts3plugin_onEditCapturedVoiceDataEvent` in plugin.c): TeamSpeak calls it after its own noise suppression and voice detection, and only frames TeamSpeak is about to send are touched, so a muted mic or voice activation still decide what goes out. The first 250 ms after keying are skipped, so the game's own key-up beep isn't sent. The game audio then fades in, goes through a peak limiter (`GAMEMIX_CEILING`) and drops up to 6 dB while the player speaks. Levels are the `GAMEMIX_*` defines.
 - **Listeners need nothing new:** the mix happens on the sender's side, and the transmission goes through each listener's radio chain as usual. Players close enough to hear the sender directly also get the game audio in their direct audio (TeamSpeak sends one stream to everyone), a little after their own game plays the same sound.
+
+# Radio immersion
+
+Each feature has a server setting (see "CVON server settings"). When the server turns one off, the game stops sending its data, so the plugin plays nothing for it.
+
+- **Terrain** (`ComputeTerrainFactor` in CVON_SCR_VONController.c): the listener's game samples the terrain height every 25 m along the path between the two radios, about 1.6 m above each. The highest ridge above that line costs up to 60 % of the signal, each further ridge 15 %, and the share of the path in shadow up to 25 %, scaled by `m_fTerrainBlockStrength`. It multiplies the distance-based `ConnectionQuality`, which the plugin already turns into static. It uses height lookups, not traces, and each talker is recomputed once a second or when either end moves 25 m. A helicopter or a hilltop operator clears the hills on their own.
+- **Collisions** (`UpdateCollisions`): the listener's game groups radio and speaker entries by frequency, time deviation and key. Where two or more transmit at once, the strongest signal is marked captured and the others lost. The plugin plays a captured transmission with a drifting heterodyne squeal and a quarter less quality, and drops a lost one to about a tenth of its voice in heavy static (`COLLISION_*` / `HETERODYNE_*` defines).
+- **Squelch** (`update_squelch_events`, `squelch_render` in plugin.c): the plugin watches for radio talkers that one of the player's radios receives starting and stopping. It plays a short squelch burst on open and a squelch tail on close, longer and louder for weak signals, panned to that radio's ear at its volume. They're added in TeamSpeak's mixed playback callback, so a tail can play after the talker's own audio has ended.
+- **Cut-off**: a sender whose character stops being alive mid-transmission sends a cut-off (`BroadcastCutOffLocalVONToServer`) instead of the normal release. The server tells each receiver (`CutOffLocalVONBroadcast`), then ends the transmission as usual, so `RemoveLocalVONBroadcasts` and anything hooked on it still run. Each receiver keeps the entry 0.5 s marked as cut off, and its plugin silences the talker and plays a burst of crackling static instead of the squelch tail.
+
+Format, all in fields older plugins ignore:
+- **`VONData.bin`:** header flags bit 3 `SquelchTones`; entry flags bit 1 collision captured, bit 2 collision lost, bit 3 cut off.
+- **`VONData.json`:** top-level `SquelchTones`; per entry `Collision` (0 none, 1 captured, 2 lost) and `CutOff`.
 
 # Vehicle radios and intercom
 

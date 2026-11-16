@@ -76,6 +76,20 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 	[Attribute()] ref array<ref CVON_SharedFrequencyObject> m_aSharedFrequencies;
 
+	//Server settings for this mission. A server config's missionHeader.m_CVON_Settings replaces them (see
+	//CVON_ServerSettings); without either, the defaults apply.
+	[Attribute(desc: "CVON server settings for this mission. The server config's missionHeader.m_CVON_Settings replaces them when present.")]
+	ref CVON_ServerSettings m_MissionSettings;
+
+	//The server settings in force, replicated to every client (ApplyServerSettings)
+	static const int SETTING_TERRAIN = 1;
+	static const int SETTING_COLLISIONS = 2;
+	static const int SETTING_SQUELCH = 4;
+	static const int SETTING_CUT_OFF = 8;
+	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_COLLISIONS | SETTING_SQUELCH | SETTING_CUT_OFF;
+	[RplProp()] protected float m_fTerrainBlockStrength = 1;
+	[RplProp()] protected int m_iRadioGameAudioEnforcement = CVON_ESettingEnforcement.PLAYER_CHOICE;
+
 	//Wow a pointer, so performant
 	static CVON_VONGameModeComponent m_Instance;
 
@@ -104,6 +118,62 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		super.OnPostInit(owner);
 		if (m_sFreqConfig != "")
 			m_FreqConfig = CVON_FreqConfig.Cast(BaseContainerTools.CreateInstanceFromContainer(BaseContainerTools.LoadContainer(m_sFreqConfig).GetResource().ToBaseContainer()));
+
+		if (Replication.IsServer())
+			ApplyServerSettings();
+	}
+
+	//Server: puts the settings in force (server config, else the mission's, else the defaults) into the
+	//replicated values every client reads
+	//==========================================================================================================================================================================
+	void ApplyServerSettings()
+	{
+		if (!Replication.IsServer())
+			return;
+
+		CVON_ServerSettings settings = ArmaReforgerScripted.CVON_GetServerConfigSettings();
+		if (!settings)
+			settings = m_MissionSettings;
+		if (!settings)
+			settings = new CVON_ServerSettings();
+
+		int flags = 0;
+		if (settings.m_bTerrainBlocksRadio && settings.m_fTerrainBlockStrength > 0)
+			flags |= SETTING_TERRAIN;
+		if (settings.m_bRadioCollisions)
+			flags |= SETTING_COLLISIONS;
+		if (settings.m_bSquelchTones)
+			flags |= SETTING_SQUELCH;
+		if (settings.m_bTransmissionCutOff)
+			flags |= SETTING_CUT_OFF;
+
+		m_iServerSettingFlags = flags;
+		m_fTerrainBlockStrength = Math.Clamp(settings.m_fTerrainBlockStrength, 0, 2);
+		m_iRadioGameAudioEnforcement = settings.m_eRadioGameAudio;
+		Replication.BumpMe();
+	}
+
+	//==========================================================================================================================================================================
+	bool IsServerSettingOn(int setting)
+	{
+		return (m_iServerSettingFlags & setting) != 0;
+	}
+
+	float GetTerrainBlockStrength()
+	{
+		if (!IsServerSettingOn(SETTING_TERRAIN))
+			return 0;
+		return m_fTerrainBlockStrength;
+	}
+
+	CVON_ESettingEnforcement GetRadioGameAudioEnforcement()
+	{
+		switch (m_iRadioGameAudioEnforcement)
+		{
+			case CVON_ESettingEnforcement.FORCE_ON: return CVON_ESettingEnforcement.FORCE_ON;
+			case CVON_ESettingEnforcement.FORCE_OFF: return CVON_ESettingEnforcement.FORCE_OFF;
+		}
+		return CVON_ESettingEnforcement.PLAYER_CHOICE;
 	}
 
 	override void OnPlayerConnected(int playerId)
@@ -532,6 +602,29 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 			pc.RemoveLocalVONBroadcast(playerIdToRemove);
 		}
+	}
+
+	//The sender was killed or knocked out mid-transmission: every receiver is told it was cut off, then the
+	//transmission ends as usual (so RemoveLocalVONBroadcasts and anything hooked on it still run)
+	//==========================================================================================================================================================================
+	void CutOffLocalVONBroadcasts(int senderId)
+	{
+		array<int> receivers;
+		if (m_mBroadcastReceivers.Find(senderId, receivers) && receivers)
+		{
+			PlayerManager pm = GetGame().GetPlayerManager();
+			foreach (int playerId: receivers)
+			{
+				if (playerId == senderId)
+					continue;
+
+				SCR_PlayerController pc = SCR_PlayerController.Cast(pm.GetPlayerController(playerId));
+				if (pc)
+					pc.CutOffLocalVONBroadcast(senderId);
+			}
+		}
+
+		RemoveLocalVONBroadcasts(senderId);
 	}
 
 	//Radio listening: a player hears what another player's radios receive (an addon's spectators, say).
