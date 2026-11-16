@@ -1250,6 +1250,8 @@ modded class SCR_VONController
 			SCR_HintManagerComponent.ShowCustomHint("Infantry phone: you're on the crew intercom", "Coalition VON", 4);
 			return;
 		}
+		//Hung up, walked off, or got into a seat with no intercom for us (getting into a crew seat says
+		//"Vehicle intercom connected" below instead)
 		if (wasOnPhone && !commsVehicle)
 			SCR_HintManagerComponent.ShowCustomHint("Infantry phone hung up", "Coalition VON", 2);
 		if (!commsVehicle)

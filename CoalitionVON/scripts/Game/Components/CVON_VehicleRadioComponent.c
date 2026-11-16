@@ -505,11 +505,13 @@ class CVON_VehicleComms
 		return comms;
 	}
 
-	//The vehicle whose infantry phone this character is holding, or null
+	//The vehicle whose infantry phone this character is holding, or null. Getting into any seat (this
+	//vehicle's or another) disconnects the phone straight away on every machine; the server hangs it up on
+	//its next cord check (CheckPhone).
 	static CVON_VehicleRadioComponent GetPhoneVehicle(IEntity character)
 	{
 		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
-		if (!character || !gamemode)
+		if (!character || !gamemode || GetSeat(character))
 			return null;
 
 		RplId characterId = RplId.Invalid();
