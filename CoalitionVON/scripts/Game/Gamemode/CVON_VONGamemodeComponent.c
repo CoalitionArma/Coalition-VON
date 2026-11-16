@@ -30,7 +30,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	[RplProp()] ref array<int> m_aPlayerVolumes = {};
 	[RplProp()] ref array<int> m_aPlayerClientIds = {};
 	[RplProp()] ref array<int> m_aPlayerIds = {};
-	string m_sTeamspeakPluginVersion = "3.1.0";
+	string m_sTeamspeakPluginVersion = "3.2.0";
 	ref map <int, string> m_PlayerFreqArray = new map <int, string>;
 	ref map <int, string> m_PlayerKeyArray = new map <int, string>;
 
@@ -94,6 +94,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	static const int SETTING_CUT_OFF = 8;
 	static const int SETTING_HANDHELD_SPEAKERS = 16;
 	static const int SETTING_DROPPED_RADIOS = 32;
+	static const int SETTING_VOICE_PICKUP = 64;
 	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_HALF_DUPLEX | SETTING_SQUELCH | SETTING_CUT_OFF | SETTING_HANDHELD_SPEAKERS | SETTING_DROPPED_RADIOS;
 	[RplProp()] protected float m_fTerrainBlockStrength = 1;
 	[RplProp()] protected int m_iRadioGameAudioEnforcement = CVON_ESettingEnforcement.PLAYER_CHOICE;
@@ -162,6 +163,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			flags |= SETTING_HANDHELD_SPEAKERS;
 		if (settings.m_bDroppedRadiosTransmit)
 			flags |= SETTING_DROPPED_RADIOS;
+		if (settings.m_bRadioVoicePickup)
+			flags |= SETTING_VOICE_PICKUP;
 
 		m_iServerSettingFlags = flags;
 		m_fTerrainBlockStrength = Math.Clamp(settings.m_fTerrainBlockStrength, 0, 2);
@@ -437,6 +440,121 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 		if (!m_aSpeakerRadios.IsEmpty())
 			BroadcastToSpeakers(VONContainer, playerIdToAdd, radioId, senderOrigin, maxDist, receivers, gamemode.IsEncryptionEnabled());
+
+		if (IsServerSettingOn(SETTING_VOICE_PICKUP))
+		{
+			m_mVoicePickupSent.Remove(playerIdToAdd);
+			UpdateVoicePickup(playerIdToAdd, receivers);
+			StartVoicePickupTicking();
+		}
+	}
+
+	//Voice pickup (m_bRadioVoicePickup): a transmitting radio's mic picks up the players talking around the
+	//sender. Each receiver plays those players' own voices through the same radio (SCR_PlayerController
+	//SetVoicePickup), so the sender's voice stream stays clean: nobody standing next to the sender hears
+	//themselves echo back through it. The server works out who is close enough and how loud when a
+	//transmission starts, then once a second while it's under way, and only resends a list when it changes.
+	//==========================================================================================================================================================================
+	static const int VOICE_PICKUP_TICK_MS = 1000;	// background voices don't need quick updates; keeps the RPCs down
+	static const float VOICE_PICKUP_RANGE_SHARE = 0.5;	// a mic hears a talker out to this share of their voice range
+	static const float VOICE_PICKUP_LEVEL = 0.6;		// loudness right next to the mic, against the sender's own voice
+	static const float VOICE_PICKUP_STEP = 0.05;		// gains are rounded to this, so small moves don't resend
+	protected bool m_bVoicePickupTicking;
+	// Last list sent for each sender ("playerId:gain;..." plus the receiver count)
+	protected ref map<int, string> m_mVoicePickupSent = new map<int, string>();
+	protected ref array<int> m_aVoicePickupPlayers = {};
+
+	protected void StartVoicePickupTicking()
+	{
+		if (m_bVoicePickupTicking)
+			return;
+		m_bVoicePickupTicking = true;
+		GetGame().GetCallqueue().CallLater(VoicePickupTick, VOICE_PICKUP_TICK_MS);
+	}
+
+	//Runs while transmissions are under way; stops by itself when there are none
+	protected void VoicePickupTick()
+	{
+		if (!IsServerSettingOn(SETTING_VOICE_PICKUP) || m_mBroadcastReceivers.IsEmpty())
+		{
+			m_bVoicePickupTicking = false;
+			return;
+		}
+		GetGame().GetCallqueue().CallLater(VoicePickupTick, VOICE_PICKUP_TICK_MS);
+
+		foreach (int senderId, array<int> receivers: m_mBroadcastReceivers)
+		{
+			if (receivers)
+				UpdateVoicePickup(senderId, receivers);
+		}
+	}
+
+	//Who the sender's mic picks up, sent to each receiver (minus the receiver themselves)
+	protected void UpdateVoicePickup(int senderId, array<int> receivers)
+	{
+		PlayerManager pm = GetGame().GetPlayerManager();
+		IEntity sender = pm.GetPlayerControlledEntity(senderId);
+		if (!sender)
+			return;
+
+		vector mic = sender.GetOrigin();
+		array<int> ids = {};
+		array<float> gains = {};
+		m_aVoicePickupPlayers.Clear();
+		pm.GetPlayers(m_aVoicePickupPlayers);
+		foreach (int playerId: m_aVoicePickupPlayers)
+		{
+			if (playerId == senderId)
+				continue;
+
+			ChimeraCharacter talker = ChimeraCharacter.Cast(pm.GetPlayerControlledEntity(playerId));
+			if (!talker)
+				continue;
+			CharacterControllerComponent controller = talker.GetCharacterController();
+			if (!controller || controller.GetLifeState() != ECharacterLifeState.ALIVE)
+				continue;
+
+			float reach = GetPlayerVolume(playerId) * VOICE_PICKUP_RANGE_SHARE;
+			float distance = vector.Distance(talker.GetOrigin(), mic);
+			if (reach <= 0 || distance >= reach)
+				continue;
+
+			float closeness = 1 - distance / reach;
+			float gain = Math.Round(VOICE_PICKUP_LEVEL * closeness * closeness / VOICE_PICKUP_STEP) * VOICE_PICKUP_STEP;
+			if (gain < VOICE_PICKUP_STEP)
+				continue;
+
+			ids.Insert(playerId);
+			gains.Insert(gain);
+		}
+
+		string all = "";
+		foreach (int allIndex, int allId: ids)
+			all += allId.ToString() + ":" + gains[allIndex].ToString() + ";";
+		string signature = all + "#" + receivers.Count().ToString();
+		string previous;
+		if (m_mVoicePickupSent.Find(senderId, previous) && previous == signature)
+			return;
+		m_mVoicePickupSent.Set(senderId, signature);
+
+		foreach (int receiverId: receivers)
+		{
+			if (receiverId == senderId)
+				continue;
+
+			SCR_PlayerController receiverController = SCR_PlayerController.Cast(pm.GetPlayerController(receiverId));
+			if (!receiverController)
+				continue;
+
+			// Nobody hears their own voice back through the radio
+			string list = "";
+			foreach (int listIndex, int listId: ids)
+			{
+				if (listId != receiverId)
+					list += listId.ToString() + ":" + gains[listIndex].ToString() + ";";
+			}
+			receiverController.SetVoicePickup(senderId, list);
+		}
 	}
 
 	//Speakers: players near a radio playing out loud (a vehicle's, a carried radio with its speaker on, a
@@ -636,6 +754,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	{
 		m_mActiveBroadcasts.Remove(playerIdToRemove);
 		m_mActiveBroadcastRange.Remove(playerIdToRemove);
+		m_mVoicePickupSent.Remove(playerIdToRemove); // receivers drop the pickup with the transmission
 
 		array<int> receivers;
 		if (!m_mBroadcastReceivers.Find(playerIdToRemove, receivers) || !receivers)

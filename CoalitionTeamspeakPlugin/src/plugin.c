@@ -441,6 +441,8 @@ typedef struct {
     float         behindIntensity;
     int           sameLanguage;
     int           cutOff;          /* the sender was killed or knocked out mid-transmission */
+    float         pickup;          /* voice pickup: a player talking next to a sender, heard through that
+                                      sender's radio at this gain (0 = a normal entry) */
     unsigned long lastUpdateTick;
 } VonEntry;
 
@@ -1487,10 +1489,15 @@ static void apply_speaker_dsp(anyID clientID, const VonEntry* e, short* samples,
             }
 
             radio_color_voice_only(st, voice, n, 1.0f, q);
-            radio_make_static(st, hiss, n, q, q);
+            /* A voice pickup is quieter, and rides on its sender's static */
+            const float pickup = (e->pickup > 0.0f) ? e->pickup : 1.0f;
+            if (e->pickup > 0.0f)
+                memset(hiss, 0, sizeof(float) * (size_t)n);
+            else
+                radio_make_static(st, hiss, n, q, q);
 
             for (int i = 0; i < n; ++i) {
-                const float s     = clampf(voice[i] + hiss[i], -1.0f, 1.0f) * SPEAKER_PRE_GAIN;
+                const float s     = clampf(voice[i] * pickup + hiss[i], -1.0f, 1.0f) * SPEAKER_PRE_GAIN;
                 const short out   = clamp_i16(s * 32767.0f);
                 if (channels <= 1) {
                     samples[processed + i] = out;
@@ -1603,6 +1610,10 @@ static int load_von_into(VonSnapshot* dst)
         v = cJSON_GetObjectItem(it, "CutOff");
         e.cutOff = cJSON_IsTrue(v) ? 1 : 0;
 
+        v = cJSON_GetObjectItem(it, "PickupGain");
+        if (cJSON_IsNumber(v))
+            e.pickup = clampf((float)v->valuedouble, 0.0f, 1.0f);
+
         e.lastUpdateTick = GetTickCount();
 
         dst->entries[count++] = e;
@@ -1636,7 +1647,8 @@ static int load_von_into(VonSnapshot* dst)
               e1 leftGain u16 (x10000) | rightGain u16 (x10000)
               e2 frequency string index u16 | faction string index u16 (0xFFFF = none)
               e3 timeDeviation i32 (0x7FFFFFFF = not sent)
-              e4 muffledDb i8 | connectionQuality u8 (x255) | behindIntensity u8 (x255) | 0
+              e4 muffledDb i8 | connectionQuality u8 (x255) | behindIntensity u8 (x255) |
+                 pickupGain u8 (x255; 0 = a normal entry, else a voice picked up by a sender's radio)
      Strings  per string: length (word), then that many bytes
      Trailer  seq u32 (equals the header's; anything else is a half-written file)
 --------------------------------------------------------------------------- */
@@ -1732,6 +1744,7 @@ static int load_von_bin_into(VonSnapshot* dst)
         v.muffledDb    = (float)(signed char)(e4 & 0xFF);
         v.connQ        = (float)((e4 >> 8) & 0xFF) / 255.0f;
         v.behindIntensity = (float)((e4 >> 16) & 0xFF) / 255.0f;
+        v.pickup          = (float)((e4 >> 24) & 0xFF) / 255.0f;
 
         const uint32_t freqIdx = e2 & 0xFFFF, facIdx = (e2 >> 16) & 0xFFFF;
         if (freqIdx != VONBIN_NO_STRING && freqIdx < stringCount) {
@@ -2528,8 +2541,8 @@ static void update_squelch_events(void)
     if (snap && snap->loaded) {
         for (size_t i = 0; i < snap->count && curCount < SQ_TRACK_MAX; ++i) {
             const VonEntry* e = &snap->entries[i];
-            if (e->type != VON_RADIO)
-                continue;
+            if (e->type != VON_RADIO || e->pickup > 0.0f)
+                continue; /* a voice pickup rides on its sender's transmission: no squelch of its own */
             SquelchTrack t;
             if (!match_local_radio(e, &t.vol01, &t.stereo))
                 continue;
@@ -2740,8 +2753,10 @@ static void reload_radio_if_changed(void)
 /* gamemix1: reads RadioMix / GameAudio (VONData.bin flags bits 1-2, or the JSON keys) and mixes game
    audio into radio transmissions.
    immersion1: reads SquelchTones (flags bit 3) and per entry the cut-off flag (entry flags bit 3), or the
-   matching JSON keys */
-#define PLUGIN_FEATURES "bin1|talking1|heartbeat1|comms1|gamemix1|immersion1"
+   matching JSON keys
+   pickup1: plays voice pickup entries (entry word e4's top byte, or the JSON PickupGain): a player talking
+   next to a sender, heard through that sender's radio, quieter and without static or squelch of its own */
+#define PLUGIN_FEATURES "bin1|talking1|heartbeat1|comms1|gamemix1|immersion1|pickup1"
 #define MAX_TALKING 256
 
 static char             g_InfoPath[PATH_BUFSIZE]    = {0};
@@ -3726,11 +3741,17 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
 
                 radio_color_voice_only(st, voice, n, vol01, q);
 
-                const float voiceGain = clampf(vol01, 0.0f, 1.0f); // quality affects FX/noise, not loudness
+                float voiceGain = clampf(vol01, 0.0f, 1.0f); // quality affects FX/noise, not loudness
+                if (e->pickup > 0.0f)
+                    voiceGain *= e->pickup; /* picked up in the background by the sender's mic */
                 for (int i = 0; i < n; ++i)
                     voice[i] *= voiceGain;
 
-                radio_make_static(st, hiss, n, q, q);
+                /* A voice pickup rides on its sender's transmission, which already carries the static */
+                if (e->pickup > 0.0f)
+                    memset(hiss, 0, sizeof(float) * (size_t)n);
+                else
+                    radio_make_static(st, hiss, n, q, q);
 
                 if (channels <= 1) {
                     for (int i = 0; i < n; ++i) {

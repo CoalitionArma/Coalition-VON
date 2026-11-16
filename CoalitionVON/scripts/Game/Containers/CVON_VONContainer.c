@@ -93,6 +93,14 @@ class CVON_VONContainer
 	bool m_bCutOff = false;
 	bool m_bCachedCutOff = false;
 
+	// Voice pickup (worked out by the listener, see SCR_PlayerController.ReconcileVoicePickups): this player
+	// isn't transmitting, but they're talking next to someone who is, so their voice comes through that
+	// sender's radio at m_fPickupGain. Written with the sender's radio data each time (SCR_VONController).
+	bool m_bPickup = false;
+	int m_iPickupSenderId;
+	float m_fPickupGain;
+	float m_fCachedPickupGain = 0;
+
 	static bool Extract(CVON_VONContainer instance, ScriptCtx ctx, SSnapSerializerBase snapshot)
 	{	
 		snapshot.SerializeBytes(instance.m_eVonType, 4);

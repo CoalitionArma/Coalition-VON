@@ -26,6 +26,9 @@ class CVON_ServerSettings
 	[Attribute(SCR_Enum.GetDefault(CVON_ESettingEnforcement.PLAYER_CHOICE), UIWidgets.ComboBox, desc: "Mix game audio into radio transmissions: 0 = each player's own setting, 1 = on for everyone, 2 = off for everyone", enums: ParamEnumArray.FromEnum(CVON_ESettingEnforcement))]
 	CVON_ESettingEnforcement m_eRadioGameAudio;
 
+	[Attribute("0", desc: "A transmitting radio's microphone picks up other players talking near the sender, so the net hears them in the background")]
+	bool m_bRadioVoicePickup;
+
 	[Attribute("1", desc: "Hills and mountains between sender and receiver weaken radio signals")]
 	bool m_bTerrainBlocksRadio;
 

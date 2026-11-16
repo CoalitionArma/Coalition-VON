@@ -67,6 +67,7 @@ Server admins set CVON's gameplay settings in the Arma Reforger server config, t
 "missionHeader": {
     "m_CVON_Settings": {
         "m_eRadioGameAudio": 0,
+        "m_bRadioVoicePickup": false,
         "m_bTerrainBlocksRadio": true,
         "m_fTerrainBlockStrength": 1.0,
         "m_eRadioDuplex": 0,
@@ -82,6 +83,7 @@ Server admins set CVON's gameplay settings in the Arma Reforger server config, t
 | Field | Type, default | What it does |
 |---|---|---|
 | `m_eRadioGameAudio` | int, `0` | Mixing game audio into radio transmissions. `0`: each player's own setting (settings menu, **Coalition VON** tab). `1`: on for everyone. `2`: off for everyone. Players see the server's choice, greyed out, on that tab. |
+| `m_bRadioVoicePickup` | bool, `false` | A transmitting radio's mic picks up other players talking near the sender: the net hears them in the background, quieter the further they are from the sender and the softer they talk. Nobody hears their own voice back. Needs plugin 3.2.0 on the listeners' side. |
 | `m_bTerrainBlocksRadio` | bool, `true` | Hills and mountains between sender and receiver weaken radio signals. |
 | `m_fTerrainBlockStrength` | float 0–2, `1.0` | How much terrain weakens them: `0` none, `1` normal, `2` double. |
 | `m_eRadioDuplex` | int, `0` | `0`: half duplex. One transmission at a time: a radio that's receiving someone won't transmit (the player hears an error tone and presses again once the channel is clear), and while a player transmits they don't hear anything else on that frequency. People standing next to them are still heard directly. `1`: full duplex. Players can transmit over each other and hear the frequency while they transmit. |
@@ -105,7 +107,7 @@ The game and the TeamSpeak plugin exchange small files in the client's profile f
 | `VONData.json` / `VONData.bin` | game, ~20 times a second (immediately on push-to-talk) | Everyone the player can hear: stereo gains, muffling, radio frequency and quality, `IsTransmitting`. The plugin uses whichever was written last. |
 | `RadioData.json` | game, when one of the player's radios changes | The player's radios: frequency, volume, ear, encryption key |
 | `VONHeartbeat.json` | game, every second | Liveness. If it stops while in game (crash), the plugin closes the mic after 3 s and leaves the VON channel after 10 s. |
-| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`, `gamemix1`, `immersion1`). The game only writes `VONData.bin` while this lists `bin1`. It only adds `RadioMix` / `GameAudio` to `VONData.json` while it lists `gamemix1`, and the radio immersion keys while it lists `immersion1`. |
+| `VONPluginInfo.json` | plugin, every 5 s; deleted on exit | What the plugin supports (`bin1`, `talking1`, `heartbeat1`, `comms1`, `gamemix1`, `immersion1`, `pickup1`). The game only writes `VONData.bin` while this lists `bin1`. It only adds `RadioMix` / `GameAudio` to `VONData.json` while it lists `gamemix1`, the radio immersion keys while it lists `immersion1`, and voice pickup entries while it lists `pickup1`. |
 | `VONTalking.json` | plugin, while in game | TeamSpeak client IDs currently talking; the game refreshes players who aren't talking less often. |
 
 `VONData.bin` is the same data as `VONData.json` packed into fixed records. Its layout is documented in `load_von_bin_into` (plugin.c) and written by `WriteVONDataBinary` (CVON_SCR_VONController.c); change both together and bump the format version.
@@ -140,10 +142,14 @@ Each feature has a server setting (see "CVON server settings"). When the server 
 - **Cut-off**: a sender whose character stops being alive mid-transmission sends a cut-off (`BroadcastCutOffLocalVONToServer`) instead of the normal release. The server tells each receiver (`CutOffLocalVONBroadcast`), then ends the transmission as usual, so `RemoveLocalVONBroadcasts` and anything hooked on it still run. Each receiver keeps the entry 0.5 s marked as cut off, and its plugin silences the talker and plays a burst of crackling static instead of the squelch tail.
 
 - **AI hearing** (`CVON_AIHearing`, server only): each player's game watches the plugin's talking list, which includes the player's own TeamSpeak client, and tells the server when they start and stop talking (`SetSpeakingForAI`), only while `m_fAIHearing` is above 0. Every 0.5 s the server checks enemy AI within each talker's voice range (the same range players hear, from their voice volume setting). With `s` = `m_fAIHearing`, the chance of being heard each check is `s × (1 − (1 − s) × (distance / range)²)`, times `0.35 + 0.65 × s` with something solid in between, so at 1 it's certain anywhere in range. An AI that hears the talker looks toward them (`SCR_AILookAction`, danger priority), and its group gets them as a heard, not seen, target (`SCR_AIGroupPerception.AddOrUpdateGunshot`, not endangering). The same AI can't hear the same player again for 15 s. Players on plugins without `talking1` aren't heard by AI.
+- **Voice pickup** (`m_bRadioVoicePickup`, off by default): mixing other voices into the sender's mic would make everyone standing next to the sender hear themselves echo back, since TeamSpeak sends one stream to everyone. So the sender's stream stays clean and each receiver plays the nearby players' own voice streams through the same radio instead:
+  - **Server** (`CVON_VONGameModeComponent.UpdateVoicePickup`): when a transmission starts and once a second while it lasts, it lists the living players within half their own voice range of the sender, with a gain of `0.6 × (1 − distance / reach)²` rounded to 0.05. It sends each receiver that list without the receiver themselves (`SCR_PlayerController.SetVoicePickup`), only when it changed.
+  - **Receiver's game** (`SCR_PlayerController.ReconcileVoicePickups`, `SCR_VONController.WriteVoicePickups`): adds a pickup entry for each listed player it doesn't already hear another way (in person, on their own transmission, on the intercom), through the loudest sender if several pick them up. The entry copies the sender's entry as written: frequency, quality, key, and for a speaker its position. It goes silent with the sender's (half duplex, cut-off, heard in person) and is left out of the file while silent, so TeamSpeak keeps that player muted. A picked-up player who walks into earshot becomes a normal direct entry.
+  - **Plugin** (`pickup1`): plays a pickup through the matching radio like its sender, scaled by the pickup gain, with no static or squelch of its own (the sender's transmission carries both).
 
 Format, all in fields older plugins ignore:
-- **`VONData.bin`:** header flags bit 3 `SquelchTones`; entry flags bit 3 cut off (bits 1–2 reserved).
-- **`VONData.json`:** top-level `SquelchTones`; per entry `CutOff`.
+- **`VONData.bin`:** header flags bit 3 `SquelchTones`; entry flags bit 3 cut off (bits 1–2 reserved); entry word e4's top byte the voice pickup gain (×255, 0 = a normal entry).
+- **`VONData.json`:** top-level `SquelchTones`; per entry `CutOff`, and `PickupGain` on voice pickup entries.
 
 # Vehicle radios and intercom
 

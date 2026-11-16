@@ -630,7 +630,7 @@ modded class SCR_VONController
 
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
-			if (container.m_eVonType != CVON_EVONType.RADIO || container.m_bCutOff || container.m_bIsSpectator)
+			if (container.m_eVonType != CVON_EVONType.RADIO || container.m_bCutOff || container.m_bIsSpectator || container.m_bPickup)
 				continue;
 			if (container.m_sFrequency != radioComp.m_sFrequency || container.m_iTimeDeviation != radioComp.m_iTimeDeviation)
 				continue;
@@ -840,6 +840,8 @@ modded class SCR_VONController
 	// and half duplex (IsBlockedByOwnTransmission) are worked out here. The server settings switch each one.
 	bool m_bPluginImmersion = false;
 	bool m_bLastWrittenSquelch = false;
+	// Voice pickup entries (SCR_PlayerController.ReconcileVoicePickups) need a plugin that plays them ("pickup1")
+	bool m_bPluginPicksUpVoices = false;
 	// Incoming squelch tones: the server's setting and the player's own ("Radio Squelch Tones", Coalition VON
 	// settings tab), refreshed once a second like the game audio setting
 	bool m_bSquelchSetting = true;
@@ -1167,6 +1169,15 @@ modded class SCR_VONController
 
 			if (existing)
 			{
+				//Close enough to hear in person now: their voice stops coming through the radio
+				if (existing.m_bPickup)
+				{
+					existing.m_bPickup = false;
+					existing.m_eVonType = CVON_EVONType.DIRECT;
+					existing.m_sFrequency = "";
+					existing.m_SenderRplId = RplComponent.Cast(player.FindComponent(RplComponent)).Id();
+					existing.m_fCachedLeft = -999; // write it fresh
+				}
 				existing.m_bOnIntercom = onIntercom;
 				existing.m_bIsSpectator = IsSpectatorTalker(playerId);
 				continue;
@@ -1182,6 +1193,10 @@ modded class SCR_VONController
 			container.m_bIsSpectator = IsSpectatorTalker(playerId);
 			m_PlayerController.m_aLocalEntries.Insert(playerId, container);
 		}
+
+		//Voice pickup: anyone who just left earshot can come back through a sender's radio
+		if (!m_PlayerController.m_mVoicePickups.IsEmpty())
+			m_PlayerController.ReconcileVoicePickups();
 	}
 
 	//Entries the server adds and removes (radio transmissions, and those heard through a vehicle speaker)
@@ -1281,6 +1296,7 @@ modded class SCR_VONController
 		bool talking = false;
 		bool gameMix = false;
 		bool immersion = false;
+		bool pickup = false;
 		SCR_JsonLoadContext info = new SCR_JsonLoadContext();
 		if (info.LoadFromFile(PLUGIN_INFO_FILE))
 		{
@@ -1297,12 +1313,14 @@ modded class SCR_VONController
 				talking = features.Contains("talking1");
 				gameMix = features.Contains("gamemix1");
 				immersion = features.Contains("immersion1");
+				pickup = features.Contains("pickup1");
 			}
 		}
 		m_bPluginReadsBinary = binary;
 		m_bPluginReportsTalking = talking;
 		m_bPluginMixesGameAudio = gameMix;
 		m_bPluginImmersion = immersion;
+		m_bPluginPicksUpVoices = pickup;
 
 		m_TalkingClientIds.Clear();
 		if (!talking)
@@ -2039,6 +2057,10 @@ modded class SCR_VONController
 		int silentTickPhase = m_iGainTick % SILENT_GAIN_DIVIDER;
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
+			// Voice pickups copy their sender's radio data, worked out in this loop: done after it
+			if (container.m_bPickup)
+				continue;
+
 			int clientId = m_PlayerController.GetPlayersTeamspeakClientId(playerId);
 			bool talking = IsTalking(clientId);
 			bool fresh = container.m_fCachedLeft == -999;
@@ -2138,6 +2160,9 @@ modded class SCR_VONController
 			container.m_iCachedType     = outType;
 		}
 
+		if (WriteVoicePickups())
+			dirty = true;
+
 		foreach (int entryPlayerId, CVON_VONContainer entry: m_PlayerController.m_aLocalEntries)
 		{
 			if (entry.m_bCutOff != entry.m_bCachedCutOff)
@@ -2160,6 +2185,71 @@ modded class SCR_VONController
 		m_bLastWrittenSquelch = IsSquelchActive();
 	}
 
+	//Voice pickup entries: a player talking next to someone transmitting, heard through that sender's radio
+	//(or the speaker playing it) at the pickup gain. They take the sender's entry as just worked out:
+	//frequency, quality, key, speaker position. Silent while the sender's entry is: half duplex blanking it,
+	//a cut-off, heard in person rather than on the radio, or the server setting or plugin not allowing it.
+	//Returns true when anything changed.
+	//==========================================================================================================================================================================
+	protected bool WriteVoicePickups()
+	{
+		bool changed = false;
+		bool allowed = m_bPluginPicksUpVoices && IsServerSettingOn(CVON_VONGameModeComponent.SETTING_VOICE_PICKUP);
+		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
+		{
+			if (!container.m_bPickup)
+				continue;
+
+			CVON_VONContainer sender = m_PlayerController.m_aLocalEntries.Get(container.m_iPickupSenderId);
+			int outType = CVON_EVONType.RADIO;
+			string frequency = "";
+			float left = 0;
+			float right = 0;
+			float behind = 0;
+			int lowered = 0;
+			float quality = 0;
+			float gain = 0;
+			if (allowed && sender && !sender.m_bPickup && !sender.m_bCutOff && sender.m_sCachedFreq != ""
+				&& (sender.m_iCachedType == CVON_EVONType.RADIO || sender.m_iCachedType == CVON_EVONType.SPEAKER))
+			{
+				outType = sender.m_iCachedType;
+				frequency = sender.m_sCachedFreq;
+				quality = sender.m_fCachedConnQ;
+				gain = container.m_fPickupGain;
+				container.m_sFactionKey = sender.m_sFactionKey;
+				// A speaker's position comes from the gains; a radio in our headset doesn't use them
+				if (outType == CVON_EVONType.SPEAKER)
+				{
+					left = sender.m_fCachedLeft;
+					right = sender.m_fCachedRight;
+					behind = sender.m_fCachedBehind;
+					lowered = sender.m_iCachedDecibels;
+				}
+			}
+
+			int clientId = m_PlayerController.GetPlayersTeamspeakClientId(playerId);
+			bool sameLanguage = IsSameLanguage(m_PlayerController.GetPlayerId(), playerId);
+			if (Math.AbsFloat(left - container.m_fCachedLeft) > 0.005 || Math.AbsFloat(right - container.m_fCachedRight) > 0.005
+				|| Math.AbsFloat(quality - container.m_fCachedConnQ) > 0.005 || Math.AbsFloat(gain - container.m_fCachedPickupGain) > 0.005
+				|| Math.AbsFloat(behind - container.m_fCachedBehind) > 0.005 || lowered != container.m_iCachedDecibels
+				|| frequency != container.m_sCachedFreq || outType != container.m_iCachedType || clientId != container.m_iCachedClientId
+				|| sameLanguage != container.m_bCachedSameLang)
+				changed = true;
+
+			container.m_fCachedLeft = left;
+			container.m_fCachedRight = right;
+			container.m_fCachedBehind = behind;
+			container.m_iCachedDecibels = lowered;
+			container.m_fCachedConnQ = quality;
+			container.m_fCachedPickupGain = gain;
+			container.m_sCachedFreq = frequency;
+			container.m_iCachedType = outType;
+			container.m_iCachedClientId = clientId;
+			container.m_bCachedSameLang = sameLanguage;
+		}
+		return changed;
+	}
+
 	//VONData.json: what every plugin version reads
 	//==========================================================================================================================================================================
 	void WriteVONDataJson()
@@ -2178,9 +2268,15 @@ modded class SCR_VONController
 		}
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
+			// A silent pickup isn't written at all, so TeamSpeak keeps that player muted
+			if (container.m_bPickup && container.m_fCachedPickupGain <= 0)
+				continue;
+
 			VONSave.StartObject(container.m_iCachedClientId.ToString());
 			if (m_bPluginImmersion)
 				VONSave.WriteValue("CutOff", container.m_bCutOff);
+			if (container.m_bPickup)
+				VONSave.WriteValue("PickupGain", container.m_fCachedPickupGain);
 			VONSave.SetMaxDecimalPlaces(3);
 			VONSave.WriteValue("VONType", container.m_iCachedType);
 			VONSave.WriteValue("Frequency", container.m_sCachedFreq);
@@ -2263,6 +2359,10 @@ modded class SCR_VONController
 		int count = 0;
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
+			// A silent pickup isn't written at all, so TeamSpeak keeps that player muted
+			if (container.m_bPickup && container.m_fCachedPickupGain <= 0)
+				continue;
+
 			// bit0 SameLanguage, bits 1-2 reserved, bit3 cut off (older plugins only read bit0)
 			int entryFlags = 0;
 			if (container.m_bCachedSameLang)
@@ -2270,12 +2370,20 @@ modded class SCR_VONController
 			if (container.m_bCutOff)
 				entryFlags = entryFlags | 8;
 			int muffled = container.m_iCachedDecibels;
+			// e4's top byte: voice pickup gain (0 = a normal entry)
+			int pickup = 0;
+			if (container.m_bPickup)
+			{
+				pickup = ToByte(container.m_fCachedPickupGain);
+				if (pickup < 1)
+					pickup = 1;
+			}
 
 			m_aBinWords.Insert((container.m_iCachedClientId & 0xFFFF) | ((container.m_iCachedType & 0xFF) << 16) | (entryFlags << 24));
 			m_aBinWords.Insert((ToGain(container.m_fCachedLeft) & 0xFFFF) | (ToGain(container.m_fCachedRight) << 16));
 			m_aBinWords.Insert((BinStringIndex(container.m_sCachedFreq) & 0xFFFF) | (BinStringIndex(container.m_sFactionKey) << 16));
 			m_aBinWords.Insert(VONBIN_NO_TIME_DEVIATION);
-			m_aBinWords.Insert((muffled & 0xFF) | (ToByte(container.m_fCachedConnQ) << 8) | (ToByte(container.m_fCachedBehind) << 16));
+			m_aBinWords.Insert((muffled & 0xFF) | (ToByte(container.m_fCachedConnQ) << 8) | (ToByte(container.m_fCachedBehind) << 16) | (pickup << 24));
 			count++;
 		}
 		m_aBinWords.Set(3, (count & 0xFFFF) | (VONBIN_ENTRY_WORDS << 16));

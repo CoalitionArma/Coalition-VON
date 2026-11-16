@@ -546,6 +546,7 @@ modded class SCR_PlayerController
 		if (m_aLocalEntries.Contains(playerId))
 		{
 			CVON_VONContainer vonContainerLocal = m_aLocalEntries.Get(playerId);
+			vonContainerLocal.m_bPickup = false; // their own transmission replaces a pickup
 			vonContainerLocal.m_eVonType = CVON_EVONType.RADIO;
 			vonContainerLocal.m_sFrequency = VONContainer.m_sFrequency;
 			vonContainerLocal.m_iRadioId = VONContainer.m_iRadioId;
@@ -577,11 +578,12 @@ modded class SCR_PlayerController
 			container = VONContainer;
 			m_aLocalEntries.Insert(playerId, container);
 		}
-		else if (container.m_eVonType == CVON_EVONType.RADIO)
+		else if (container.m_eVonType == CVON_EVONType.RADIO && !container.m_bPickup)
 		{
 			return; // already heard on a radio of our own
 		}
 
+		container.m_bPickup = false; // their own transmission replaces a pickup
 		container.m_eVonType = CVON_EVONType.SPEAKER;
 		container.m_sFrequency = VONContainer.m_sFrequency;
 		container.m_iRadioId = VONContainer.m_iRadioId;
@@ -630,6 +632,115 @@ modded class SCR_PlayerController
 			return;
 
 		m_aLocalEntries.Remove(playerIdToRemove);
+		// Their mic stops picking up the people around them; and if they were picked up by someone
+		// else's radio, that pickup can take over again
+		m_mVoicePickups.Remove(playerIdToRemove);
+		ReconcileVoicePickups();
+	}
+
+	//Voice pickup (server setting m_bRadioVoicePickup, see CVON_VONGameModeComponent.UpdateVoicePickup):
+	//for each sender we're receiving, the players their mic picks up and how loudly
+	//==========================================================================================================================================================================
+	ref map<int, ref map<int, float>> m_mVoicePickups = new map<int, ref map<int, float>>();
+
+	void SetVoicePickup(int senderId, string list)
+	{
+		Rpc(RpcAsk_SetVoicePickup, senderId, list);
+	}
+
+	//list: "playerId:gain;playerId:gain;" (empty: nobody)
+	[RplRpc(RplChannel.Reliable, RplRcver.Owner)]
+	protected void RpcAsk_SetVoicePickup(int senderId, string list)
+	{
+		map<int, float> talkers = new map<int, float>();
+		array<string> pairs = {};
+		list.Split(";", pairs, true);
+		foreach (string pair: pairs)
+		{
+			array<string> parts = {};
+			pair.Split(":", parts, true);
+			if (parts.Count() == 2)
+				talkers.Set(parts[0].ToInt(), parts[1].ToFloat());
+		}
+
+		if (talkers.IsEmpty())
+			m_mVoicePickups.Remove(senderId);
+		else
+			m_mVoicePickups.Set(senderId, talkers);
+		ReconcileVoicePickups();
+	}
+
+	//Keeps a pickup entry for every player some sender's mic picks up, unless we already hear them some other
+	//way (in person, on their own transmission, on the intercom). A player picked up by several senders goes
+	//through the loudest. Called when a list arrives or a transmission ends, and from UpdateMembership.
+	//==========================================================================================================================================================================
+	void ReconcileVoicePickups()
+	{
+		// Loudest pickup for each talker, from senders we're actually receiving
+		map<int, int> bestSender = new map<int, int>();
+		map<int, float> bestGain = new map<int, float>();
+		foreach (int senderId, map<int, float> talkers: m_mVoicePickups)
+		{
+			CVON_VONContainer senderEntry = m_aLocalEntries.Get(senderId);
+			if (!talkers || !senderEntry || senderEntry.m_bPickup || (senderEntry.m_eVonType != CVON_EVONType.RADIO && senderEntry.m_eVonType != CVON_EVONType.SPEAKER))
+				continue;
+
+			foreach (int talkerId, float gain: talkers)
+			{
+				float best;
+				if (bestGain.Find(talkerId, best) && best >= gain)
+					continue;
+				bestGain.Set(talkerId, gain);
+				bestSender.Set(talkerId, senderId);
+			}
+		}
+
+		// Pickup entries nobody picks up any more
+		array<int> stale = {};
+		foreach (int entryId, CVON_VONContainer entry: m_aLocalEntries)
+		{
+			if (entry.m_bPickup && !bestSender.Contains(entryId))
+				stale.Insert(entryId);
+		}
+		foreach (int staleId: stale)
+			m_aLocalEntries.Remove(staleId);
+
+		PlayerManager pm = GetGame().GetPlayerManager();
+		foreach (int pickedId, int pickedSender: bestSender)
+		{
+			if (pickedId == GetPlayerId())
+				continue;
+
+			CVON_VONContainer existing = m_aLocalEntries.Get(pickedId);
+			if (existing && !existing.m_bPickup)
+				continue; // heard in person, on their own radio or on the intercom
+
+			// Dead or knocked out (when we can see them): nothing to pick up
+			ChimeraCharacter pickedCharacter = ChimeraCharacter.Cast(pm.GetPlayerControlledEntity(pickedId));
+			if (pickedCharacter)
+			{
+				CharacterControllerComponent controller = pickedCharacter.GetCharacterController();
+				if (controller && controller.GetLifeState() != ECharacterLifeState.ALIVE)
+				{
+					if (existing)
+						m_aLocalEntries.Remove(pickedId);
+					continue;
+				}
+			}
+
+			if (!existing)
+			{
+				existing = new CVON_VONContainer();
+				existing.m_bPickup = true;
+				existing.m_eVonType = CVON_EVONType.RADIO; // kept by UpdateMembership like other server-sent entries
+				existing.m_iPlayerId = pickedId;
+				existing.m_iVolume = CVON_VONGameModeComponent.GetInstance().GetPlayerVolume(pickedId);
+				m_aLocalEntries.Insert(pickedId, existing);
+			}
+			existing.m_iClientId = GetPlayersTeamspeakClientId(pickedId);
+			existing.m_iPickupSenderId = pickedSender;
+			existing.m_fPickupGain = bestGain.Get(pickedId);
+		}
 	}
 
 	//Cut-off: the sender was killed or knocked out mid-transmission. Like a release, but every receiver
@@ -676,7 +787,7 @@ modded class SCR_PlayerController
 	void RpcAsk_CutOffLocalVONBroadcast(int playerIdToRemove)
 	{
 		CVON_VONContainer container = m_aLocalEntries.Get(playerIdToRemove);
-		if (!container || (container.m_eVonType != CVON_EVONType.RADIO && container.m_eVonType != CVON_EVONType.SPEAKER))
+		if (!container || container.m_bPickup || (container.m_eVonType != CVON_EVONType.RADIO && container.m_eVonType != CVON_EVONType.SPEAKER))
 			return;
 
 		// Written to VONData as cut off; the plugin plays the burst and silences them
@@ -690,7 +801,11 @@ modded class SCR_PlayerController
 	{
 		CVON_VONContainer current = m_aLocalEntries.Get(playerId);
 		if (current && current == container && current.m_bCutOff)
+		{
 			m_aLocalEntries.Remove(playerId);
+			m_mVoicePickups.Remove(playerId);
+			ReconcileVoicePickups();
+		}
 	}
 
 	//All these are described already in the radio component, this is just how we get the authority to do it from the proxy.
