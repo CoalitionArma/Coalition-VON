@@ -34,6 +34,9 @@
  *     speaker an unfiltered voice from the vehicle.
  *
  * - Mic control: IsTransmitting toggles CLIENT_INPUT_DEACTIVATED.
+ * - Game audio on radio (cvon_gameaudio.c): while the game says the player is talking on a radio with the
+ *     "mix game audio" setting on (RadioMix), the game's own sound is captured from its process and mixed
+ *     into the outgoing microphone stream, so listeners hear the sender's surroundings on the net.
  * - Auto-move to VONChannelName (and optional VONChannelPassword) when InGame==true.
  * - File reloads, mutes and channel moves run on a worker thread woken by profile-folder changes
  *   (audio callbacks are pure DSP).
@@ -62,6 +65,8 @@ typedef uint16_t anyID;
 
 #include "plugin.h"
 #include "cJSON.h"
+#include "cvon_gameaudio.h"
+#include "cvon_version.h"
 #include "teamspeak/public_definitions.h"
 #include "teamspeak/public_errors.h"
 #include "teamspeak/public_errors_rare.h"
@@ -496,6 +501,12 @@ static WatchedFileState g_vonDataWatch = {0}, g_serverWatch = {0}, g_radioWatch 
 /* Mic + state gate (worker sets; audio reads) */
 static int           g_IsTransmitting = 0, g_LastMicActive = -1;
 static volatile long g_inVonActiveFlag = 0; /* 0/1 set by worker, read by audio */
+
+/* Game audio on radio, from VONData (worker sets; audio reads).
+   g_GameAudioEnabled: the player's "mix game audio" setting is on, so keep the capture running.
+   g_RadioMix: the player is transmitting on a radio right now with that setting on. */
+static volatile long g_GameAudioEnabled = 0;
+static volatile long g_RadioMix         = 0;
 
 /* Per-client volume modifier state and muting control */
 typedef struct {
@@ -1492,10 +1503,17 @@ static int load_von_into(VonSnapshot* dst)
     if (cJSON_IsBool(tx))
         g_IsTransmitting = tx->valueint;
 
+    /* Only written for plugins that list "gamemix1"; absent means off */
+    cJSON* mix = cJSON_GetObjectItem(root, "RadioMix");
+    cJSON* gameAudio = cJSON_GetObjectItem(root, "GameAudio");
+    InterlockedExchange(&g_RadioMix, cJSON_IsTrue(mix) ? 1 : 0);
+    InterlockedExchange(&g_GameAudioEnabled, cJSON_IsTrue(gameAudio) ? 1 : 0);
+
     cJSON* it;
     cJSON_ArrayForEach(it, root)
     {
-        if (!it->string || strcmp(it->string, "IsTransmitting") == 0)
+        /* Entries are objects keyed by client ID; the top-level flags above are not */
+        if (!it->string || !cJSON_IsObject(it))
             continue;
         if (count >= MAX_TRACKED)
             break;
@@ -1570,7 +1588,8 @@ static int load_von_into(VonSnapshot* dst)
    reads it (VONPluginInfo.json). All values little-endian, packed in 4-byte words:
 
      Header   w0 magic 'CVON' (0x4E4F5643)
-              w1 version u16 | flags u16 (bit0 = IsTransmitting)
+              w1 version u16 | flags u16 (bit0 = IsTransmitting, bit1 = RadioMix, bit2 = GameAudio;
+                                          older plugins only look at bit0)
               w2 seq u32
               w3 entryCount u16 | entryWords u16
               w4 stringCount u16 | reserved u16
@@ -1619,6 +1638,8 @@ static int load_von_bin_into(VonSnapshot* dst)
     if ((w1 & 0xFFFF) != VONBIN_VERSION)
         return 0;
     const int      transmitting = (w1 >> 16) & 1;
+    const int      radioMix     = (w1 >> 17) & 1;
+    const int      gameAudio    = (w1 >> 18) & 1;
     const uint32_t seq          = rd_u32(buf + 8);
     const uint32_t w3           = rd_u32(buf + 12);
     const size_t   entryCount   = w3 & 0xFFFF;
@@ -1686,6 +1707,8 @@ static int load_von_bin_into(VonSnapshot* dst)
     }
 
     g_IsTransmitting = transmitting;
+    InterlockedExchange(&g_RadioMix, radioMix);
+    InterlockedExchange(&g_GameAudioEnabled, gameAudio);
     dst->count     = count;
     dst->loaded    = 1;
     dst->buildTick = now;
@@ -2018,6 +2041,7 @@ static void handle_game_gone(unsigned long heartbeatAgeMs)
     logf("[CRF] Game heartbeat stale (%lu ms) - leaving VON\n", heartbeatAgeMs);
     g_SD_inGame      = 0;
     g_IsTransmitting = 0;
+    InterlockedExchange(&g_RadioMix, 0);
     g_heartbeatArmed = 0;
     InterlockedExchange(&g_inVonActiveFlag, 0);
 }
@@ -2394,7 +2418,9 @@ static void reload_radio_if_changed(void)
                        "bin1" is listed here.
    VONTalking.json     TeamSpeak client IDs currently talking; the game updates silent players less often.
 --------------------------------------------------------------------------- */
-#define PLUGIN_FEATURES "bin1|talking1|heartbeat1|comms1"
+/* gamemix1: reads RadioMix / GameAudio (VONData.bin flags bits 1-2, or the JSON keys) and mixes game
+   audio into radio transmissions */
+#define PLUGIN_FEATURES "bin1|talking1|heartbeat1|comms1|gamemix1"
 #define MAX_TALKING 256
 
 static char             g_InfoPath[PATH_BUFSIZE]    = {0};
@@ -2698,6 +2724,66 @@ static void profile_dir_of(const char* filePath, char* out, size_t outSize)
         out[0] = '\0';
 }
 
+/* ---------------------------------------------------------------------------
+   Game audio capture (cvon_gameaudio.c): runs while in game with the player's mix setting on, so it is
+   already warm when they key a radio. Retries with a growing delay when the game can't be found or the
+   capture fails (no process loopback before Windows 10 2004).
+--------------------------------------------------------------------------- */
+#define GAMEAUDIO_RETRY_MIN_MS 2000
+#define GAMEAUDIO_RETRY_MAX_MS 60000
+
+#define GAMEAUDIO_HEALTHY_MS 30000 /* a capture that ran this long before ending resets the retry delay */
+
+static unsigned long g_gameAudioNextTry  = 0;
+static unsigned long g_gameAudioRetryMs  = GAMEAUDIO_RETRY_MIN_MS;
+static unsigned long g_gameAudioStarted  = 0;
+static int           g_gameAudioWasUp    = 0;
+
+static void manage_game_audio(int wanted, unsigned long now)
+{
+    if (!wanted || !gameaudio_supported()) {
+        if (gameaudio_running() || g_gameAudioWasUp) {
+            gameaudio_stop();
+            logf("[CRF] Game audio capture stopped\n");
+        }
+        g_gameAudioWasUp   = 0;
+        g_gameAudioNextTry = 0;
+        g_gameAudioRetryMs = GAMEAUDIO_RETRY_MIN_MS;
+        return;
+    }
+
+    if (gameaudio_running()) {
+        if (gameaudio_process_alive(gameaudio_pid()))
+            return;
+        gameaudio_stop(); /* the game closed or restarted: find it again */
+        g_gameAudioWasUp   = 0;
+        g_gameAudioNextTry = now;
+    } else if (g_gameAudioWasUp) {
+        /* The capture thread ended on its own */
+        logf("[CRF] Game audio capture ended (0x%08lX)\n", (unsigned long)gameaudio_last_error());
+        gameaudio_stop();
+        g_gameAudioWasUp = 0;
+        if (now - g_gameAudioStarted >= GAMEAUDIO_HEALTHY_MS)
+            g_gameAudioRetryMs = GAMEAUDIO_RETRY_MIN_MS;
+        g_gameAudioNextTry = now + g_gameAudioRetryMs;
+        g_gameAudioRetryMs = min(g_gameAudioRetryMs * 2, GAMEAUDIO_RETRY_MAX_MS);
+        return;
+    }
+
+    if ((long)(now - g_gameAudioNextTry) < 0)
+        return;
+
+    const DWORD pid = gameaudio_find_game_process();
+    if (!pid || !gameaudio_start(pid)) {
+        g_gameAudioNextTry = now + g_gameAudioRetryMs;
+        g_gameAudioRetryMs = min(g_gameAudioRetryMs * 2, GAMEAUDIO_RETRY_MAX_MS);
+        return;
+    }
+    g_gameAudioWasUp  = 1;
+    g_gameAudioStarted = now;
+    logf("[CRF] Game audio capture started (pid %lu)\n", (unsigned long)pid);
+}
+
 static unsigned long WINAPI worker_main(LPVOID param)
 {
     (void)param;
@@ -2760,6 +2846,7 @@ static unsigned long WINAPI worker_main(LPVOID param)
             try_ensure_move(sch);
             try_return_to_previous(sch);
             update_von_active_flag(sch);
+            manage_game_audio(g_SD_inGame && heartbeatOk && InterlockedCompareExchange(&g_GameAudioEnabled, 0, 0), now);
 
             /* What other players see in TeamSpeak's info panel when they select us */
             int state = CVON_STATE_NOT_IN_GAME;
@@ -2826,7 +2913,7 @@ PLUGINS_EXPORTDLL const char* ts3plugin_name()
 }
 PLUGINS_EXPORTDLL const char* ts3plugin_version()
 {
-    return "3.0.1";
+    return CVON_VERSION_STRING;
 }
 PLUGINS_EXPORTDLL int ts3plugin_apiVersion()
 {
@@ -2853,6 +2940,12 @@ PLUGINS_EXPORTDLL int ts3plugin_init()
     memset((void*)g_directStates, 0, sizeof(g_directStates));
     memset((void*)g_radioStates, 0, sizeof(g_radioStates));
     g_talkingCount = 0;
+    gameaudio_init();
+    InterlockedExchange(&g_RadioMix, 0);
+    InterlockedExchange(&g_GameAudioEnabled, 0);
+    g_gameAudioWasUp   = 0;
+    g_gameAudioNextTry = 0;
+    g_gameAudioRetryMs = GAMEAUDIO_RETRY_MIN_MS;
 
     buildVONDataPath(g_VonPath, sizeof(g_VonPath));
     buildServerJsonPath(g_ServerPath, sizeof(g_ServerPath));
@@ -2939,6 +3032,10 @@ PLUGINS_EXPORTDLL void ts3plugin_shutdown()
         g_quitEvent = NULL;
     }
 
+    /* The worker no longer starts captures; the audio callback stops mixing once RadioMix is off */
+    InterlockedExchange(&g_RadioMix, 0);
+    gameaudio_shutdown();
+
     /* After the worker has stopped, so the two never touch the mute state at once */
     if (ts3Functions.getCurrentServerConnectionHandlerID())
         release_plugin_mutes(ts3Functions.getCurrentServerConnectionHandlerID());
@@ -3023,10 +3120,56 @@ static char* dup_text(const char* text)
     return out;
 }
 
+/* Channel panel: how many players run each plugin version */
+#define INFO_MAX_VERSIONS 8
+#define INFO_MAX_OUTDATED_NAMES 12
+
+typedef struct {
+    char version[32];
+    int  count;
+} VersionTally;
+
+static void tally_version(VersionTally* tally, int* tallyCount, const char* version)
+{
+    /* Once all but one slot are used, the last slot collects every further version as "other" */
+    const char* v = version[0] ? version : "?";
+    for (int i = 0; i < *tallyCount; ++i) {
+        if (strcmp(tally[i].version, v) == 0) {
+            tally[i].count++;
+            return;
+        }
+    }
+    int slot;
+    if (*tallyCount < INFO_MAX_VERSIONS - 1) {
+        slot = (*tallyCount)++;
+    } else {
+        slot = INFO_MAX_VERSIONS - 1;
+        v    = "other";
+        if (*tallyCount < INFO_MAX_VERSIONS)
+            (*tallyCount)++;
+    }
+    _snprintf(tally[slot].version, sizeof(tally[slot].version), "%s", v);
+    tally[slot].version[sizeof(tally[slot].version) - 1] = '\0';
+    tally[slot].count++;
+}
+
+/* Appends printf-style text to buf (size cap), never overflowing */
+static void append_text(char* buf, size_t cap, const char* fmt, ...)
+{
+    const size_t used = strlen(buf);
+    if (used + 1 >= cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnprintf(buf + used, cap - used - 1, fmt, ap);
+    va_end(ap);
+    buf[cap - 1] = '\0';
+}
+
 PLUGINS_EXPORTDLL void ts3plugin_infoData(uint64 sch, uint64 id, enum PluginItemType type, char** data)
 {
     *data = NULL;
-    char text[512];
+    char text[2048];
 
     if (type == PLUGIN_CLIENT) {
         char* meta = NULL;
@@ -3050,7 +3193,12 @@ PLUGINS_EXPORTDLL void ts3plugin_infoData(uint64 sch, uint64 id, enum PluginItem
         anyID* clients = NULL;
         if (ts3Functions.getChannelClientList(sch, id, &clients) != ERROR_ok || !clients)
             return;
-        int total = 0, withPlugin = 0, inGame = 0;
+        int          total = 0, withPlugin = 0, inGame = 0, outdated = 0;
+        VersionTally tally[INFO_MAX_VERSIONS];
+        int          tallyCount = 0;
+        char         names[768];
+        memset(tally, 0, sizeof(tally));
+        names[0] = '\0';
         for (int i = 0; clients[i]; ++i) {
             ++total;
             char* meta = NULL;
@@ -3061,6 +3209,19 @@ PLUGINS_EXPORTDLL void ts3plugin_infoData(uint64 sch, uint64 id, enum PluginItem
                     ++withPlugin;
                     if (state >= CVON_STATE_IN_GAME)
                         ++inGame;
+                    tally_version(tally, &tallyCount, version);
+
+                    /* Players on another version than this plugin, by name */
+                    if (strcmp(version, ts3plugin_version()) != 0) {
+                        if (outdated < INFO_MAX_OUTDATED_NAMES) {
+                            char* nick = NULL;
+                            if (ts3Functions.getClientVariableAsString(sch, clients[i], CLIENT_NICKNAME, &nick) == ERROR_ok && nick) {
+                                append_text(names, sizeof(names), "\n  %s (v%s)", nick, version[0] ? version : "?");
+                                ts3Functions.freeMemory(nick);
+                            }
+                        }
+                        ++outdated;
+                    }
                 }
                 ts3Functions.freeMemory(meta);
             }
@@ -3069,6 +3230,14 @@ PLUGINS_EXPORTDLL void ts3plugin_infoData(uint64 sch, uint64 id, enum PluginItem
         if (total == 0)
             return;
         _snprintf(text, sizeof(text), "%d of %d have the plugin\n%d in game", withPlugin, total, inGame);
+        text[sizeof(text) - 1] = '\0';
+        for (int i = 0; i < tallyCount; ++i)
+            append_text(text, sizeof(text), "\nv%s: %d", tally[i].version, tally[i].count);
+        if (outdated > 0) {
+            append_text(text, sizeof(text), "\n[color=#c93636]Not on v%s: %d[/color]%s", ts3plugin_version(), outdated, names);
+            if (outdated > INFO_MAX_OUTDATED_NAMES)
+                append_text(text, sizeof(text), "\n  ... and %d more", outdated - INFO_MAX_OUTDATED_NAMES);
+        }
     } else {
         return;
     }
@@ -3327,4 +3496,109 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditMixedPlaybackVoiceDataEvent(uint64 sch, s
     (void)channelSpeakerArray;
     (void)channelFillMask;
     /* Intentionally no-op to avoid "messing with volume". All shaping is in per-client callback. */
+}
+
+/* ---------------------------------------------------------------------------
+   Game audio on radio: mixes the game's sound (cvon_gameaudio.c) into the outgoing microphone while
+   the player transmits on a radio. TeamSpeak calls this after its own preprocessing (noise suppression,
+   echo cancelling, voice detection), so the game audio isn't filtered out, and only frames TeamSpeak
+   is about to send are touched: a muted mic or voice activation still decide what goes out.
+
+   Listeners then run the transmission through their radio chain as usual. Players close enough to hear
+   the sender directly also get it in their direct audio (one stream goes to everyone), heard a little
+   after their own game plays the same sound.
+--------------------------------------------------------------------------- */
+#define GAMEMIX_KEYUP_HOLD_MS 250    /* skip the game's own key-up beep (0.17 s) */
+#define GAMEMIX_FADE_IN_MS 100.0f
+#define GAMEMIX_GAIN 0.6f            /* game audio level before the limiter */
+#define GAMEMIX_CEILING 0.30f        /* peak limit for the game audio, so a rifle next to the mic doesn't drown the voice */
+#define GAMEMIX_LIMIT_RELEASE_MS 200.0f
+#define GAMEMIX_DUCK_DEPTH 0.5f      /* game audio drops up to 6 dB while the player speaks */
+#define GAMEMIX_VOICE_FULL 0.05f     /* voice level at which the ducking is complete */
+#define GAMEMIX_VOICE_RELEASE_MS 300.0f
+#define GAMEMIX_DUCK_SMOOTH_MS 10.0f
+#define GAMEMIX_CHUNK 1024
+
+static struct {
+    int           active;
+    unsigned long keyedAt;
+    float         fade;
+    float         limEnv;
+    float         voiceEnv;
+    float         duck;
+} g_mix = {0};
+
+static float g_mixGameBuf[GAMEMIX_CHUNK];
+
+PLUGINS_EXPORTDLL void ts3plugin_onEditCapturedVoiceDataEvent(uint64 sch, short* samples, int sampleCount, int channels, int* edited)
+{
+    (void)sch;
+
+    const int mixing = InterlockedCompareExchange(&g_RadioMix, 0, 0) && InterlockedCompareExchange(&g_inVonActiveFlag, 0, 0);
+    if (!mixing || !samples || sampleCount <= 0 || channels <= 0 || !edited) {
+        g_mix.active = 0;
+        return;
+    }
+
+    const unsigned long now = GetTickCount();
+    if (!g_mix.active) {
+        g_mix.active   = 1;
+        g_mix.keyedAt  = now;
+        g_mix.fade     = 0.0f;
+        g_mix.limEnv   = 0.0f;
+        g_mix.voiceEnv = 0.0f;
+        g_mix.duck     = 1.0f;
+        gameaudio_flush();
+    }
+
+    /* Still inside the key-up hold, or TeamSpeak won't send this frame: drop the game audio for this
+       stretch so what is mixed later stays in step with the voice */
+    if (now - g_mix.keyedAt < GAMEMIX_KEYUP_HOLD_MS || !(*edited & 2)) {
+        gameaudio_flush();
+        return;
+    }
+
+    static float limRel = 0.0f, voiceRel = 0.0f, duckA = 0.0f, fadeStep = 0.0f;
+    if (limRel == 0.0f) {
+        limRel   = expf(-1.0f / (TS_SAMPLE_RATE * GAMEMIX_LIMIT_RELEASE_MS / 1000.0f));
+        voiceRel = expf(-1.0f / (TS_SAMPLE_RATE * GAMEMIX_VOICE_RELEASE_MS / 1000.0f));
+        duckA    = 1.0f - expf(-1.0f / (TS_SAMPLE_RATE * GAMEMIX_DUCK_SMOOTH_MS / 1000.0f));
+        fadeStep = 1.0f / (TS_SAMPLE_RATE * GAMEMIX_FADE_IN_MS / 1000.0f);
+    }
+
+    int done = 0;
+    while (done < sampleCount) {
+        const int n = (sampleCount - done < GAMEMIX_CHUNK) ? sampleCount - done : GAMEMIX_CHUNK;
+        gameaudio_read(g_mixGameBuf, n);
+
+        for (int i = 0; i < n; ++i) {
+            short* frame = samples + (size_t)(done + i) * (size_t)channels;
+
+            /* Voice level, for ducking */
+            float voice = 0.0f;
+            for (int ch = 0; ch < channels; ++ch)
+                voice += (float)frame[ch];
+            voice = fabsf(voice / ((float)channels * 32768.0f));
+            g_mix.voiceEnv = (voice > g_mix.voiceEnv) ? voice : g_mix.voiceEnv * voiceRel;
+            const float duckTarget = 1.0f - GAMEMIX_DUCK_DEPTH * clampf(g_mix.voiceEnv / GAMEMIX_VOICE_FULL, 0.0f, 1.0f);
+            g_mix.duck += (duckTarget - g_mix.duck) * duckA;
+
+            /* Game audio through a peak limiter (instant attack, slow release) */
+            const float game = g_mixGameBuf[i] * GAMEMIX_GAIN;
+            const float ag   = fabsf(game);
+            g_mix.limEnv     = (ag > g_mix.limEnv) ? ag : g_mix.limEnv * limRel;
+            const float lim  = (g_mix.limEnv > GAMEMIX_CEILING) ? GAMEMIX_CEILING / g_mix.limEnv : 1.0f;
+
+            if (g_mix.fade < 1.0f)
+                g_mix.fade = (g_mix.fade + fadeStep > 1.0f) ? 1.0f : g_mix.fade + fadeStep;
+
+            const float add = game * lim * g_mix.duck * g_mix.fade;
+            for (int ch = 0; ch < channels; ++ch) {
+                const float x = (float)frame[ch] / 32768.0f + add;
+                frame[ch]     = clamp_i16(soft_limit(x) * 32767.0f);
+            }
+        }
+        done += n;
+    }
+    *edited |= 1;
 }
