@@ -97,6 +97,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	static const int SETTING_VOICE_PICKUP = 64;
 	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_HALF_DUPLEX | SETTING_SQUELCH | SETTING_CUT_OFF | SETTING_HANDHELD_SPEAKERS | SETTING_DROPPED_RADIOS;
 	[RplProp()] protected float m_fTerrainInterferenceStrength = 0.5;
+	[RplProp()] protected int m_iSignalModel = CVON_ESignalModel.ARCADE;
 	[RplProp()] protected int m_iRadioGameAudioEnforcement = CVON_ESettingEnforcement.PLAYER_CHOICE;
 	//Replicated so clients only report their talking (SetSpeakingForAI) while it's on
 	[RplProp()] protected float m_fAIHearing = 0;
@@ -168,6 +169,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 		m_iServerSettingFlags = flags;
 		m_fTerrainInterferenceStrength = Math.Clamp(settings.m_fTerrainInterferenceStrength, 0, 1);
+		m_iSignalModel = settings.m_eSignalModel;
 		m_iRadioGameAudioEnforcement = settings.m_eRadioGameAudio;
 		m_fAIHearing = Math.Clamp(settings.m_fAIHearing, 0, 1);
 		if (m_fAIHearing > 0 && !m_AIHearing)
@@ -200,6 +202,12 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 	//The terrain formula's multiplier (ComputeTerrainFactor): the 0-1 setting doubled, so the default 0.5 is
 	//the normal 1 and the setting's 1 the strongest, 2
+	//Radio signal model in force (CVON_ServerSettings.m_eSignalModel)
+	bool IsRealisticSignal()
+	{
+		return m_iSignalModel == CVON_ESignalModel.REALISTIC;
+	}
+
 	float GetTerrainInterferenceStrength()
 	{
 		if (!IsServerSettingOn(SETTING_TERRAIN))

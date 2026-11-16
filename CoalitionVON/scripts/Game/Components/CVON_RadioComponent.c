@@ -24,6 +24,15 @@ class CVON_RadioComponent: ScriptComponent
 	[Attribute("1", UIWidgets.Slider, desc: "How much terrain interference this radio suffers: 1 = handheld, lower for powerful sets (0 = none)", params: "0 2 0.05")]
 	float m_fInterference;
 
+	//Realistic signal model (server setting m_eSignalModel) only: what the radio puts out, and the band it
+	//works in. Frequencies are usually net names ("1PLT"), so the band stands in for the frequency in the
+	//path loss; a numeric frequency in kHz (e.g. "55500") is used as it is.
+	[Attribute("5", UIWidgets.Slider, desc: "Realistic signal model: transmit power in watts (handhelds about 5, manpacks 20, vehicle sets 50)", params: "0.1 100 0.1")]
+	float m_fTransmitPower;
+
+	[Attribute("50", UIWidgets.Slider, desc: "Realistic signal model: the band the radio works in, in MHz, for nets named rather than numbered (VHF low band about 50)", params: "2 600 1")]
+	float m_fBandMHz;
+
 	//The Icon at the center of the VON Radial Menu
 	[Attribute("{D9F335476016F8D7}UI/layouts/Radios/ANPRC152/data/ANPRC152Icon.edds", UIWidgets.ResourcePickerThumbnail, "Icon in the center of the radial menu", params: "edds")] ResourceName m_sRadioIcon;
 
@@ -142,6 +151,13 @@ class CVON_RadioComponent: ScriptComponent
 	int GetInterferencePercent()
 	{
 		return (int)Math.Round(Math.Clamp(m_fInterference, 0, 2) * 100);
+	}
+
+	//m_fTransmitPower as sent with a transmission (CVON_VONContainer.m_iTransmitPower)
+	//==========================================================================================================================================================================
+	int GetTransmitPowerMilliwatts()
+	{
+		return (int)Math.Round(Math.Clamp(m_fTransmitPower, 0.001, 1000) * 1000);
 	}
 
 	//Returns the RplId of the radio.

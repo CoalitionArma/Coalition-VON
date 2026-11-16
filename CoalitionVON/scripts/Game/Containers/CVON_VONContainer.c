@@ -44,6 +44,12 @@ class CVON_VONContainer
 
 	//How much interference the sending radio suffers, in percent (CVON_RadioComponent.m_fInterference)
 	int m_iInterference = 100;
+
+	//The sending radio's transmit power in milliwatts, for the realistic signal model (CVON_RadioComponent.m_fTransmitPower)
+	int m_iTransmitPower = 5000;
+
+	//Realistic signal model, worked out by the listener: the received quality, cached like the terrain factor
+	float m_fRealisticQuality = 1;
 	
 	// Values processed by the client itself
 	//The distance from the receiver to the sender
@@ -115,6 +121,7 @@ class CVON_VONContainer
 		snapshot.SerializeBytes(instance.m_iPlayerId, 4);
 		snapshot.SerializeBytes(instance.m_iTimeDeviation, 4);
 		snapshot.SerializeBytes(instance.m_iInterference, 4);
+		snapshot.SerializeBytes(instance.m_iTransmitPower, 4);
 		
 		return true;
 	}
@@ -130,6 +137,7 @@ class CVON_VONContainer
 		snapshot.SerializeBytes(instance.m_iPlayerId, 4);
 		snapshot.SerializeBytes(instance.m_iTimeDeviation, 4);
 		snapshot.SerializeBytes(instance.m_iInterference, 4);
+		snapshot.SerializeBytes(instance.m_iTransmitPower, 4);
 		
 		return true;
 	}
@@ -145,6 +153,7 @@ class CVON_VONContainer
 		snapshot.EncodeInt(packet);
 		snapshot.EncodeInt(packet);
 		snapshot.EncodeInt(packet);
+		snapshot.EncodeInt(packet);
 	}
 	
 	static bool Decode(ScriptBitSerializer packet, ScriptCtx ctx, SSnapSerializerBase snapshot)
@@ -155,6 +164,7 @@ class CVON_VONContainer
 		snapshot.DecodeInt(packet);
 		snapshot.DecodeInt(packet);
 		snapshot.DecodeString(packet);
+		snapshot.DecodeInt(packet);
 		snapshot.DecodeInt(packet);
 		snapshot.DecodeInt(packet);
 		snapshot.DecodeInt(packet);
@@ -172,6 +182,7 @@ class CVON_VONContainer
 		&& lhs.CompareStringSnapshots(rhs)
 		&& lhs.CompareSnapshots(rhs, 4)
 		&& lhs.CompareSnapshots(rhs, 4)
+		&& lhs.CompareSnapshots(rhs, 4)
 		&& lhs.CompareSnapshots(rhs, 4);
 	}
 	
@@ -185,6 +196,7 @@ class CVON_VONContainer
 		&& snapshot.CompareString(instance.m_sFactionKey)
 		&& snapshot.Compare(instance.m_iPlayerId, 4)
 		&& snapshot.Compare(instance.m_iTimeDeviation, 4)
-		&& snapshot.Compare(instance.m_iInterference, 4);
+		&& snapshot.Compare(instance.m_iInterference, 4)
+		&& snapshot.Compare(instance.m_iTransmitPower, 4);
 	}
 }

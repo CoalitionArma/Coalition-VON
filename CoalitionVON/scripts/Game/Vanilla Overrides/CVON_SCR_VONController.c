@@ -458,6 +458,7 @@ modded class SCR_VONController
 					container.m_sFactionKey = radioComp.m_sFactionKey;
 					container.m_iTimeDeviation = radioComp.m_iTimeDeviation;
 					container.m_iInterference = radioComp.GetInterferencePercent();
+					container.m_iTransmitPower = radioComp.GetTransmitPowerMilliwatts();
 					switch (radioComp.m_eStereo)
 					{
 						case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{E3B4231783ABA914}UI/sounds/beepstart.wav"); break;}
@@ -484,6 +485,7 @@ modded class SCR_VONController
 					container.m_sFactionKey = radioComp.m_sFactionKey;
 					container.m_iTimeDeviation = radioComp.m_iTimeDeviation;
 					container.m_iInterference = radioComp.GetInterferencePercent();
+					container.m_iTransmitPower = radioComp.GetTransmitPowerMilliwatts();
 					switch (radioComp.m_eStereo)
 					{
 						case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{E3B4231783ABA914}UI/sounds/beepstart.wav"); break;}
@@ -510,6 +512,7 @@ modded class SCR_VONController
 					container.m_sFactionKey = radioComp.m_sFactionKey;
 					container.m_iTimeDeviation = radioComp.m_iTimeDeviation;
 					container.m_iInterference = radioComp.GetInterferencePercent();
+					container.m_iTransmitPower = radioComp.GetTransmitPowerMilliwatts();
 					switch (radioComp.m_eStereo)
 					{
 						case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{E3B4231783ABA914}UI/sounds/beepstart.wav"); break;}
@@ -601,110 +604,221 @@ modded class SCR_VONController
 	float GetLinkInterference(CVON_VONContainer container)
 	{
 		float senderInterference = container.m_iInterference / 100.0;
-
-		float receiverInterference = -1;
-		if (container.m_eVonType == CVON_EVONType.SPEAKER && container.m_SpeakerEntity)
-		{
-			CVON_RadioComponent speakerRadio = CVON_RadioComponent.Cast(container.m_SpeakerEntity.FindComponent(CVON_RadioComponent));
-			if (speakerRadio)
-				receiverInterference = speakerRadio.m_fInterference;
-		}
-		else
-		{
-			foreach (IEntity radio: m_PlayerController.m_aRadios)
-			{
-				if (!radio)
-					continue;
-				CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
-				if (!radioComp || radioComp.m_sFrequency != container.m_sFrequency)
-					continue;
-				if (receiverInterference < 0 || radioComp.m_fInterference < receiverInterference)
-					receiverInterference = radioComp.m_fInterference;
-			}
-		}
-		if (receiverInterference < 0)
-			receiverInterference = 1;
-
+		float receiverInterference = 1;
+		CVON_RadioComponent receiving = GetReceivingRadio(container);
+		if (receiving)
+			receiverInterference = receiving.m_fInterference;
 		return (senderInterference + receiverInterference) * 0.5;
 	}
 
-	//Terrain factor for an entry, cached: recomputed every TERRAIN_INTERVAL or once an end moved far enough
+	//The radio this entry is received on: a speaker's radio for a speaker entry, else the best of our radios
+	//on that frequency (the least interference), or null
 	//==========================================================================================================================================================================
-	float GetTerrainFactor(CVON_VONContainer container, vector receiver, vector sender)
+	CVON_RadioComponent GetReceivingRadio(CVON_VONContainer container)
 	{
-		if (!m_VONGameModeComponent)
-			return 1;
-		float strength = m_VONGameModeComponent.GetTerrainInterferenceStrength();
-		if (strength <= 0)
-			return 1;
+		if (container.m_eVonType == CVON_EVONType.SPEAKER && container.m_SpeakerEntity)
+			return CVON_RadioComponent.Cast(container.m_SpeakerEntity.FindComponent(CVON_RadioComponent));
 
+		CVON_RadioComponent best;
+		foreach (IEntity radio: m_PlayerController.m_aRadios)
+		{
+			if (!radio)
+				continue;
+			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+			if (!radioComp || radioComp.m_sFrequency != container.m_sFrequency)
+				continue;
+			if (!best || radioComp.m_fInterference < best.m_fInterference)
+				best = radioComp;
+		}
+		return best;
+	}
+
+	//Signal quality of a link, 0..1, by the server's signal model (m_eSignalModel). Arcade: a curve over the
+	//sending radio's range, times the terrain factor. Realistic: a link budget (GetRealisticQuality); -1 when
+	//the receiver can't pick it up at all.
+	//==========================================================================================================================================================================
+	float LinkQuality(CVON_VONContainer container, vector receiver, vector sender)
+	{
+		if (m_VONGameModeComponent && m_VONGameModeComponent.IsRealisticSignal())
+			return GetRealisticQuality(container, receiver, sender);
+		return GetSignalStrength(vector.Distance(receiver, sender), container.m_iMaxDistance) * GetTerrainFactor(container, receiver, sender);
+	}
+
+	//Realistic signal model, after ACRE2's los_simple: received power = transmit power - path loss - terrain
+	//diffraction, against the receiver's sensitivity.
+	//  - Path loss is the larger of free-space path loss (FSPL: 20 log f + 20 log d - 27.55, f in MHz, d in m)
+	//    and plane-earth loss (40 log d - 20 log ht - 20 log hr, antenna heights above the ground in m). Two
+	//    antennas near the ground lose far more than free space to the reflection off the ground between them,
+	//    which is what limits a handheld to a few km; a helicopter, high above it, gets close to free space.
+	//  - Diffraction: the Deygout method with the ITU-R P.526 knife-edge loss (DiffractionLoss): the worst
+	//    obstruction between the antennas, plus the worst on each side of it, scaled by the server's terrain
+	//    strength. (ACRE2 sums a knife edge over every peak; with antennas 1.6 m off the ground that turned
+	//    every bump into a wall.)
+	//  - Quality: 0 at REALISTIC_SENSITIVITY_DBM, 1 from REALISTIC_FULL_QUALITY_DBM up; below the sensitivity
+	//    nothing is received (-1).
+	//Cached like the terrain factor: recomputed every TERRAIN_INTERVAL or once an end moved far enough.
+	//==========================================================================================================================================================================
+	static const float REALISTIC_SENSITIVITY_DBM = -118;		// ACRE2's PRC-152 / PRC-117 sensitivity
+	static const float REALISTIC_FULL_QUALITY_DBM = -95;		// clean from here up (ACRE2 uses -50: nearly everything hissed)
+	static const float REALISTIC_ANTENNA_HEIGHT = 1.6;		// m above the radio's position (a character's)
+	static const float REALISTIC_DIFFRACTION_SPACING = 15;	// m between terrain samples along the path
+	static const int REALISTIC_DIFFRACTION_MAX_SAMPLES = 400;
+
+	float GetRealisticQuality(CVON_VONContainer container, vector receiver, vector sender)
+	{
 		bool moved = vector.DistanceSq(receiver, container.m_vTerrainTo) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK
 			|| vector.DistanceSq(sender, container.m_vTerrainFrom) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK;
 		if (m_fTime >= container.m_fNextTerrainTime || moved)
 		{
-			container.m_fTerrainFactor = ComputeTerrainFactor(sender, receiver, strength * GetLinkInterference(container));
+			container.m_fRealisticQuality = ComputeRealisticQuality(container, receiver, sender);
 			container.m_fNextTerrainTime = m_fTime + TERRAIN_INTERVAL;
 			container.m_vTerrainFrom = sender;
 			container.m_vTerrainTo = receiver;
 		}
-		return container.m_fTerrainFactor;
+		return container.m_fRealisticQuality;
 	}
 
-	//Half duplex (server setting), receiving side: while the player transmits on a radio, that radio can't
-	//receive. Radio traffic on the frequency they're transmitting on is then treated like traffic they have no
-	//radio for: only heard directly, if the sender is close enough.
-	//==========================================================================================================================================================================
-	protected bool IsBlockedByOwnTransmission(CVON_VONContainer container)
+	float ComputeRealisticQuality(CVON_VONContainer container, vector receiver, vector sender)
 	{
-		if (!m_bIsBroadcasting || !m_CurrentVONContainer || m_CurrentVONContainer.m_eVonType != CVON_EVONType.RADIO)
-			return false;
-		if (container.m_eVonType != CVON_EVONType.RADIO || container.m_sFrequency.IsEmpty())
-			return false;
-		if (container.m_sFrequency != m_CurrentVONContainer.m_sFrequency)
-			return false;
-		return IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HALF_DUPLEX);
+		BaseWorld world = GetGame().GetWorld();
+		if (!world)
+			return 1;
+
+		vector up = Vector(0, REALISTIC_ANTENNA_HEIGHT, 0);
+		vector txAntenna = sender + up;
+		vector rxAntenna = receiver + up;
+		float distance = Math.Max(vector.Distance(txAntenna, rxAntenna), 1);
+		float mhz = GetLinkBandMHz(container);
+
+		float powerDbm = 10 * Math.Log10(Math.Max(container.m_iTransmitPower, 1));
+		float freeSpace = -27.55 + 20 * Math.Log10(mhz) + 20 * Math.Log10(distance);
+		float planeEarth = 40 * Math.Log10(distance) - 20 * Math.Log10(AntennaHeightAboveGround(world, txAntenna)) - 20 * Math.Log10(AntennaHeightAboveGround(world, rxAntenna));
+		float pathLoss = Math.Max(freeSpace, planeEarth);
+
+		float diffraction = 0;
+		float strength = 0;
+		if (m_VONGameModeComponent)
+			strength = m_VONGameModeComponent.GetTerrainInterferenceStrength();
+		if (strength > 0)
+			diffraction = DiffractionLoss(world, txAntenna, rxAntenna, mhz) * strength;
+
+		float received = powerDbm - pathLoss - diffraction;
+		if (received < REALISTIC_SENSITIVITY_DBM)
+			return -1;
+		return Math.Clamp((received - REALISTIC_SENSITIVITY_DBM) / (REALISTIC_FULL_QUALITY_DBM - REALISTIC_SENSITIVITY_DBM), 0, 1);
 	}
 
-	//Half duplex, transmitting side (busy channel lockout): the radio won't key while it's receiving someone
-	//on its frequency, time deviation and key, as heard here (in range, past the hills). The player gets an
-	//error tone and has to press again once the channel is clear. Two players keying within the same moment
-	//can both get through, as neither has heard the other yet.
-	//==========================================================================================================================================================================
-	protected bool IsChannelBusy(CVON_RadioComponent radioComp)
+	//The ground under a point (the sea surface counts as ground), and the point's height above it: at least 1 m
+	protected float GroundHeight(BaseWorld world, float x, float z)
 	{
-		if (!IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HALF_DUPLEX))
-			return false;
+		return Math.Max(world.GetSurfaceY(x, z), 0);
+	}
 
-		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
+	protected float AntennaHeightAboveGround(BaseWorld world, vector antenna)
+	{
+		return Math.Max(antenna[1] - GroundHeight(world, antenna[0], antenna[2]), 1);
+	}
+
+	//The frequency for the path loss, in MHz: a numeric net frequency in kHz as it is (e.g. "55500"), else the
+	//receiving radio's band (most nets are named, "1PLT")
+	//==========================================================================================================================================================================
+	float GetLinkBandMHz(CVON_VONContainer container)
+	{
+		float khz = container.m_sFrequency.ToFloat();
+		if (khz >= 2000 && khz <= 600000)
+			return khz / 1000;
+
+		CVON_RadioComponent receiving = GetReceivingRadio(container);
+		if (receiving)
+			return Math.Clamp(receiving.m_fBandMHz, 2, 600);
+		return 50;
+	}
+
+	//Terrain diffraction in dB between two antennas: the Deygout method. The terrain profile is sampled along
+	//the path; the sample that most obstructs the line between the antennas (the highest Fresnel-Kirchhoff
+	//parameter v) is the main edge, and the worst samples between each antenna and that edge add their own
+	//losses. Each edge costs the ITU-R P.526 knife-edge loss J(v). Terrain well below the line (v under
+	//-0.78) costs nothing.
+	//==========================================================================================================================================================================
+	protected ref array<float> m_aDiffractionProfile = {};
+
+	float DiffractionLoss(BaseWorld world, vector from, vector to, float mhz)
+	{
+		float distance2D = vector.DistanceXZ(from, to);
+		if (distance2D < REALISTIC_DIFFRACTION_SPACING * 4)
+			return 0;
+
+		int samples = (int)Math.Ceil(distance2D / REALISTIC_DIFFRACTION_SPACING);
+		samples = Math.ClampInt(samples, 4, REALISTIC_DIFFRACTION_MAX_SAMPLES);
+		float sampleCount = samples;
+
+		// Ground heights at x = distance * (i + 1) / samples, i = 0 .. samples - 2 (the antennas are the ends)
+		m_aDiffractionProfile.Clear();
+		for (int i = 1; i < samples; i++)
 		{
-			if (container.m_eVonType != CVON_EVONType.RADIO || container.m_bCutOff || container.m_bIsSpectator || container.m_bPickup)
-				continue;
-			if (container.m_sFrequency != radioComp.m_sFrequency || container.m_iTimeDeviation != radioComp.m_iTimeDeviation)
-				continue;
-			if (HasRadioKey(container.m_sFactionKey) && HasRadioKey(radioComp.m_sFactionKey) && container.m_sFactionKey != radioComp.m_sFactionKey)
-				continue;
-			if (RadioSignalAtReceiver(container) > 0)
-				return true;
+			float t = i / sampleCount;
+			m_aDiffractionProfile.Insert(GroundHeight(world, Math.Lerp(from[0], to[0], t), Math.Lerp(from[2], to[2], t)));
 		}
-		return false;
+
+		float wavelength = 300 / mhz;
+		int last = samples - 1;	// index standing for the receiving antenna; -1 stands for the sending one
+		int mainEdge;
+		float v = WorstEdge(-1, last, from[1], to[1], distance2D, sampleCount, wavelength, mainEdge);
+		if (v <= -0.78)
+			return 0;
+
+		float edgeHeight = m_aDiffractionProfile[mainEdge];
+		int ignored;
+		float loss = KnifeEdgeLoss(v);
+		loss += KnifeEdgeLoss(WorstEdge(-1, mainEdge, from[1], edgeHeight, distance2D, sampleCount, wavelength, ignored));
+		loss += KnifeEdgeLoss(WorstEdge(mainEdge, last, edgeHeight, to[1], distance2D, sampleCount, wavelength, ignored));
+		return loss;
 	}
 
-	//Same rule as the plugin: an empty key or "0" means no key
-	protected bool HasRadioKey(string key)
+	//The most obstructing profile sample strictly between indices a and b, for the line from height ya at a to
+	//yb at b (a = -1: the sending antenna, b = samples - 1: the receiving one). Returns its v (-99 if none).
+	protected float WorstEdge(int a, int b, float ya, float yb, float distance2D, float sampleCount, float wavelength, out int worst)
 	{
-		return !key.IsEmpty() && key != "0";
+		float xa = 0;
+		if (a >= 0)
+			xa = distance2D * (a + 1) / sampleCount;
+		float xb = distance2D;
+		if (b < sampleCount - 1)
+			xb = distance2D * (b + 1) / sampleCount;
+
+		float best = -99;
+		worst = -1;
+		if (xb - xa <= 0)
+			return best;
+
+		for (int i = a + 1; i < b; i++)
+		{
+			float x = distance2D * (i + 1) / sampleCount;
+			float d1 = Math.Max(x - xa, 0.001);
+			float d2 = Math.Max(xb - x, 0.001);
+			float line = ya + (yb - ya) * (x - xa) / (xb - xa);
+			float h = m_aDiffractionProfile[i] - line;	// positive: the terrain rises above the line
+			float v = h * Math.Sqrt(2 / wavelength * (d1 + d2) / (d1 * d2));
+			if (v > best)
+			{
+				best = v;
+				worst = i;
+			}
+		}
+		return best;
 	}
 
-	//==========================================================================================================================================================================
-	protected bool RefuseIfChannelBusy(CVON_RadioComponent radioComp)
+	//ITU-R P.526 single knife-edge loss J(v) in dB; nothing for v at or below -0.78
+	protected float KnifeEdgeLoss(float v)
 	{
-		if (!IsChannelBusy(radioComp))
-			return false;
-		SCR_UISoundEntity.SoundEvent(SCR_SoundEvent.SOUND_RADIO_CHANGEFREQUENCY_ERROR);
-		return true;
+		if (v <= -0.78)
+			return 0;
+		float a = v - 0.1;
+		return 6.9 + 20 * Math.Log10(Math.Sqrt(a * a + 1) + a);
 	}
 
-	//The signal a radio transmission arrives with at the player's radio: distance, then hills in the way
+	//The signal a radio transmission arrives with at the player's radio (LinkQuality: -1 = out of reach in
+	//the realistic model)
 	//==========================================================================================================================================================================
 	protected float RadioSignalAtReceiver(CVON_VONContainer container)
 	{
@@ -712,7 +826,7 @@ modded class SCR_VONController
 		vector sender = container.m_vSenderLocation;
 		if (container.m_SoundSource)
 			sender = container.m_SoundSource.GetOrigin();
-		return GetSignalStrength(vector.Distance(receiver, sender), container.m_iMaxDistance) * GetTerrainFactor(container, receiver, sender);
+		return LinkQuality(container, receiver, sender);
 	}
 
 	//True while the player talks on a radio with "mix game audio" on: the plugin then mixes the game's sound
@@ -2177,7 +2291,23 @@ modded class SCR_VONController
 			{
 				//The vehicle's radio is the receiver: its distance from the sender sets the signal
 				vector speakerOrigin = container.m_SpeakerEntity.GetOrigin();
-				container.m_fConnectionQuality = GetSignalStrength(vector.Distance(speakerOrigin, container.m_vSenderLocation), container.m_iMaxDistance) * GetTerrainFactor(container, speakerOrigin, container.m_vSenderLocation);
+				container.m_fConnectionQuality = LinkQuality(container, speakerOrigin, container.m_vSenderLocation);
+			}
+
+			//Realistic signal model: out of reach, the radio receives nothing. Without a frequency the plugin
+			//plays a radio entry as direct speech (only heard if the sender is close); a speaker goes quiet.
+			if (container.m_fConnectionQuality < 0)
+			{
+				container.m_fConnectionQuality = 0;
+				if (container.m_eVonType == CVON_EVONType.RADIO)
+				{
+					frequency = "";
+				}
+				else if (outType == CVON_EVONType.SPEAKER)
+				{
+					left = 0;
+					right = 0;
+				}
 			}
 
 			bool sameLanguage = IsSameLanguage(m_PlayerController.GetPlayerId(), container.m_iPlayerId);
