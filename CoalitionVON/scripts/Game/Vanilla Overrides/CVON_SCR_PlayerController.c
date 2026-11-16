@@ -551,6 +551,7 @@ modded class SCR_PlayerController
 			vonContainerLocal.m_sFrequency = VONContainer.m_sFrequency;
 			vonContainerLocal.m_iRadioId = VONContainer.m_iRadioId;
 			vonContainerLocal.m_sFactionKey = VONContainer.m_sFactionKey;
+			vonContainerLocal.m_iInterference = VONContainer.m_iInterference;
 			vonContainerLocal.m_iMaxDistance = maxDistance;
 			vonContainerLocal.m_vSenderLocation = senderOrigin;
 			vonContainerLocal.m_bCutOff = false; // a new transmission replaces a cut-off still showing
@@ -588,6 +589,7 @@ modded class SCR_PlayerController
 		container.m_sFrequency = VONContainer.m_sFrequency;
 		container.m_iRadioId = VONContainer.m_iRadioId;
 		container.m_sFactionKey = VONContainer.m_sFactionKey;
+		container.m_iInterference = VONContainer.m_iInterference;
 		container.m_iMaxDistance = maxDistance;
 		container.m_vSenderLocation = senderOrigin;
 		container.m_SpeakerRplId = speakerId;

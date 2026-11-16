@@ -1,26 +1,78 @@
-//Player settings for CVON, saved with the game's user settings and shown on the "Coalition VON" tab of the
-//settings menu (CVON_SettingsSubMenu).
-class CVON_GameSettings : ModuleGameSettings
+//Player settings for CVON, shown on the "Coalition VON" tab of the settings menu (CVON_SettingsSubMenu) and
+//kept in $profile:CVON_Settings.json.
+//
+//Not a ModuleGameSettings in the game's user settings: Reforger reads and saves those before any mod is
+//loaded, drops modules it doesn't know ("Unknown keyword/data 'CVON_GameSettings'") and writes the file
+//back without them, so a player's choice was lost every time the game started. Our own file isn't touched
+//by vanilla.
+class CVON_GameSettings
 {
-	static const string MODULE = "CVON_GameSettings";
+	static const string FILE_PATH = "$profile:CVON_Settings.json";
+
+	//Widget names on the settings tab
 	static const string RADIO_GAME_AUDIO = "m_bRadioGameAudio";
 	static const string SQUELCH_TONES = "m_bSquelchTones";
 
-	[Attribute(defvalue: "1", uiwidget: UIWidgets.CheckBox, desc: "While talking on a radio, the TeamSpeak plugin mixes the game's sound (gunfire, explosions, vehicles) into the transmission.")]
-	bool m_bRadioGameAudio;
+	protected static bool s_bLoaded;
+	protected static bool s_bRadioGameAudio = true;	//While talking on a radio, mix the game's sound into the transmission
+	protected static bool s_bSquelchTones = true;	//Squelch burst and tail on incoming transmissions
 
-	[Attribute(defvalue: "1", uiwidget: UIWidgets.CheckBox, desc: "Hear a squelch burst when an incoming radio transmission opens and a squelch tail when it closes.")]
-	bool m_bSquelchTones;
-
-	//The player's own choice; squelch only plays while the server has it on too (IsSquelchTonesEnabled)
 	//==========================================================================================================================================================================
+	protected static void Load()
+	{
+		if (s_bLoaded)
+			return;
+		s_bLoaded = true;
+
+		if (!FileIO.FileExists(FILE_PATH))
+			return;
+
+		JsonLoadContext context = new JsonLoadContext();
+		if (!context.LoadFromFile(FILE_PATH))
+			return;
+
+		bool value;
+		if (context.ReadValue("RadioGameAudio", value))
+			s_bRadioGameAudio = value;
+		if (context.ReadValue("SquelchTones", value))
+			s_bSquelchTones = value;
+	}
+
+	protected static void Save()
+	{
+		JsonSaveContext context = new JsonSaveContext();
+		context.WriteValue("RadioGameAudio", s_bRadioGameAudio);
+		context.WriteValue("SquelchTones", s_bSquelchTones);
+		if (!context.SaveToFile(FILE_PATH))
+			Print("[CVON] Could not save " + FILE_PATH, LogLevel.WARNING);
+	}
+
+	//The player's own choices
+	//==========================================================================================================================================================================
+	static bool GetPlayerRadioGameAudio()
+	{
+		Load();
+		return s_bRadioGameAudio;
+	}
+
+	static void SetPlayerRadioGameAudio(bool enabled)
+	{
+		Load();
+		s_bRadioGameAudio = enabled;
+		Save();
+	}
+
 	static bool GetPlayerSquelchTones()
 	{
-		bool enabled = true;
-		BaseContainer settings = GetGame().GetGameUserSettings().GetModule(MODULE);
-		if (settings)
-			settings.Get(SQUELCH_TONES, enabled);
-		return enabled;
+		Load();
+		return s_bSquelchTones;
+	}
+
+	static void SetPlayerSquelchTones(bool enabled)
+	{
+		Load();
+		s_bSquelchTones = enabled;
+		Save();
 	}
 
 	//Off for everyone when the server turns squelch off (CVON_ServerSettings.m_bSquelchTones)
@@ -35,17 +87,6 @@ class CVON_GameSettings : ModuleGameSettings
 	static bool IsSquelchTonesEnabled()
 	{
 		return !IsServerSquelchOff() && GetPlayerSquelchTones();
-	}
-
-	//The player's own choice, whatever the server enforces
-	//==========================================================================================================================================================================
-	static bool GetPlayerRadioGameAudio()
-	{
-		bool enabled = true;
-		BaseContainer settings = GetGame().GetGameUserSettings().GetModule(MODULE);
-		if (settings)
-			settings.Get(RADIO_GAME_AUDIO, enabled);
-		return enabled;
 	}
 
 	//What the server enforces (CVON_ServerSettings.m_eRadioGameAudio); PLAYER_CHOICE outside a CVON game

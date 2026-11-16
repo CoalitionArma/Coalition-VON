@@ -22,6 +22,7 @@ GenericEntity : "{5879D8E9C56E358D}Prefabs/Items/Core/Radio_base.et" {
    m_sRadioName "R-168"
    m_eRadioType LONG
    m_iRadioRange 10000
+   m_fInterference 0.25
    m_sRadioIcon "{75636C3CC268DA62}UI/layouts/Radios/R168/data/R168Icon.edds"
    m_sDialOn "{BA07FE76D57B8991}UI/layouts/Radios/R168/data/R168DialOn.edds"
    m_sDialOff "{15519282637FD347}UI/layouts/Radios/R168/data/R168DialOff.edds"

@@ -19,6 +19,11 @@ class CVON_RadioComponent: ScriptComponent
 	//How far it go...
 	[Attribute("5000")] int m_iRadioRange;
 
+	//How much terrain gets in this radio's way: a powerful set with a good antenna (a manpack) shrugs off hills a
+	//handheld loses the signal behind. A link uses the average of the sending and receiving radios'.
+	[Attribute("1", UIWidgets.Slider, desc: "How much terrain interference this radio suffers: 1 = handheld, lower for powerful sets (0 = none)", params: "0 2 0.05")]
+	float m_fInterference;
+
 	//The Icon at the center of the VON Radial Menu
 	[Attribute("{D9F335476016F8D7}UI/layouts/Radios/ANPRC152/data/ANPRC152Icon.edds", UIWidgets.ResourcePickerThumbnail, "Icon in the center of the radial menu", params: "edds")] ResourceName m_sRadioIcon;
 
@@ -130,6 +135,13 @@ class CVON_RadioComponent: ScriptComponent
 		Replication.BumpMe();
 		if (!System.IsConsoleApp())
 			OnRadioStateReplicated();
+	}
+
+	//m_fInterference as sent with a transmission (CVON_VONContainer.m_iInterference)
+	//==========================================================================================================================================================================
+	int GetInterferencePercent()
+	{
+		return (int)Math.Round(Math.Clamp(m_fInterference, 0, 2) * 100);
 	}
 
 	//Returns the RplId of the radio.

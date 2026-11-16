@@ -83,11 +83,11 @@ HorizontalLayoutWidgetClass {
         }
         ButtonWidgetClass "{6A1F3C9E2B7D4E58}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
          Name "m_bSquelchTones"
-         Slot LayoutSlot "{7C2E5B8A1D9F3064}" {
+         Slot LayoutSlot "{54890CCD61050681}" {
           Padding 4 16 4 4
          }
          components {
-          SCR_SpinBoxComponent "{3B8D6F2A9E1C5047}" {
+          SCR_SpinBoxComponent "{5472C6CBC0640458}" {
            m_sLabel "Radio Squelch Tones"
            m_sLabelLayout "{F003823FF141983C}UI/layouts/Menus/SettingsMenu/CustomWidgets/SettingsLabel.layout"
            m_aElementNames {

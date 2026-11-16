@@ -30,7 +30,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	[RplProp()] ref array<int> m_aPlayerVolumes = {};
 	[RplProp()] ref array<int> m_aPlayerClientIds = {};
 	[RplProp()] ref array<int> m_aPlayerIds = {};
-	string m_sTeamspeakPluginVersion = "3.2.0";
+	string m_sTeamspeakPluginVersion = "3.2.1";
 	ref map <int, string> m_PlayerFreqArray = new map <int, string>;
 	ref map <int, string> m_PlayerKeyArray = new map <int, string>;
 
@@ -96,7 +96,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	static const int SETTING_DROPPED_RADIOS = 32;
 	static const int SETTING_VOICE_PICKUP = 64;
 	[RplProp()] protected int m_iServerSettingFlags = SETTING_TERRAIN | SETTING_HALF_DUPLEX | SETTING_SQUELCH | SETTING_CUT_OFF | SETTING_HANDHELD_SPEAKERS | SETTING_DROPPED_RADIOS;
-	[RplProp()] protected float m_fTerrainBlockStrength = 1;
+	[RplProp()] protected float m_fTerrainInterferenceStrength = 0.5;
 	[RplProp()] protected int m_iRadioGameAudioEnforcement = CVON_ESettingEnforcement.PLAYER_CHOICE;
 	//Replicated so clients only report their talking (SetSpeakingForAI) while it's on
 	[RplProp()] protected float m_fAIHearing = 0;
@@ -151,7 +151,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			settings = new CVON_ServerSettings();
 
 		int flags = 0;
-		if (settings.m_bTerrainBlocksRadio && settings.m_fTerrainBlockStrength > 0)
+		if (settings.m_bTerrainInterference && settings.m_fTerrainInterferenceStrength > 0)
 			flags |= SETTING_TERRAIN;
 		if (settings.m_eRadioDuplex != CVON_ERadioDuplex.FULL)
 			flags |= SETTING_HALF_DUPLEX;
@@ -167,7 +167,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			flags |= SETTING_VOICE_PICKUP;
 
 		m_iServerSettingFlags = flags;
-		m_fTerrainBlockStrength = Math.Clamp(settings.m_fTerrainBlockStrength, 0, 2);
+		m_fTerrainInterferenceStrength = Math.Clamp(settings.m_fTerrainInterferenceStrength, 0, 1);
 		m_iRadioGameAudioEnforcement = settings.m_eRadioGameAudio;
 		m_fAIHearing = Math.Clamp(settings.m_fAIHearing, 0, 1);
 		if (m_fAIHearing > 0 && !m_AIHearing)
@@ -198,11 +198,13 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		return (m_iServerSettingFlags & setting) != 0;
 	}
 
-	float GetTerrainBlockStrength()
+	//The terrain formula's multiplier (ComputeTerrainFactor): the 0-1 setting doubled, so the default 0.5 is
+	//the normal 1 and the setting's 1 the strongest, 2
+	float GetTerrainInterferenceStrength()
 	{
 		if (!IsServerSettingOn(SETTING_TERRAIN))
 			return 0;
-		return m_fTerrainBlockStrength;
+		return m_fTerrainInterferenceStrength * 2;
 	}
 
 	CVON_ESettingEnforcement GetRadioGameAudioEnforcement()
@@ -457,7 +459,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	//==========================================================================================================================================================================
 	static const int VOICE_PICKUP_TICK_MS = 1000;	// background voices don't need quick updates; keeps the RPCs down
 	static const float VOICE_PICKUP_RANGE_SHARE = 0.5;	// a mic hears a talker out to this share of their voice range
-	static const float VOICE_PICKUP_LEVEL = 0.6;		// loudness right next to the mic, against the sender's own voice
+	static const float VOICE_PICKUP_LEVEL = 0.35;		// loudness right next to the mic, against the sender's own voice (the plugin also caps it at half the sender's level)
 	static const float VOICE_PICKUP_STEP = 0.05;		// gains are rounded to this, so small moves don't resend
 	protected bool m_bVoicePickupTicking;
 	// Last list sent for each sender ("playerId:gain;..." plus the receiver count)

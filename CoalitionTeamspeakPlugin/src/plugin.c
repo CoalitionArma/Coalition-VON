@@ -702,6 +702,12 @@ static inline unsigned state_hash(anyID id)
     return ((unsigned)id * 2654435761u) & STATE_TABLE_MASK;
 }
 
+/* Radio static: steady hiss, band-limited with filters that don't ring (a resonant filter made the old noise
+   whistle) */
+#define STATIC_LP_HZ 3600.0f
+#define STATIC_HP_HZ 400.0f
+#define STATIC_FILTER_Q 0.7071f
+
 /* Radio state per talker (audio thread) */
 typedef struct {
     volatile anyID id;           /* 0 = free slot */
@@ -710,6 +716,14 @@ typedef struct {
     Biquad         lp_n, hp_n;   /* static filters */
     PinkNoise      pink;
     RingMod        rm;
+    float          staticFade;   /* 0..1: the static fades in as a transmission starts */
+    unsigned long  lastStaticTick; /* last time static was made: a gap means a new transmission */
+    int            crackleLeft;  /* samples left in the current crackle */
+    float          crackleAmp;   /* its level, decaying */
+    int            dropoutLeft;  /* samples left in the current weak-signal dropout */
+    float          signalGain;   /* 0..1: the voice, smoothed in and out of dropouts */
+    float          pickupEnv;    /* voice pickup: this voice's level */
+    float          pickupCap;    /* voice pickup: the gain keeping it under its sender */
 } RadioState;
 
 static RadioState       g_radioStates[STATE_TABLE_SIZE];
@@ -719,10 +733,17 @@ static void radio_state_init(RadioState* s, anyID id)
 {
     biquad_calc_lowpass(&s->lp, TS_SAMPLE_RATE, RADIO_LP_HZ, RADIO_LP_Q);
     biquad_calc_highpass(&s->hp, TS_SAMPLE_RATE, RADIO_HP_HZ, RADIO_HP_Q);
-    biquad_calc_lowpass(&s->lp_n, TS_SAMPLE_RATE, RADIO_LP_HZ, RADIO_LP_Q);
-    biquad_calc_highpass(&s->hp_n, TS_SAMPLE_RATE, RADIO_HP_HZ, RADIO_HP_Q);
+    biquad_calc_lowpass(&s->lp_n, TS_SAMPLE_RATE, STATIC_LP_HZ, STATIC_FILTER_Q);
+    biquad_calc_highpass(&s->hp_n, TS_SAMPLE_RATE, STATIC_HP_HZ, STATIC_FILTER_Q);
     pink_init(&s->pink, (unsigned)id * 2654435761u);
     ring_init(&s->rm);
+    s->staticFade  = 0.0f;
+    s->crackleLeft = 0;
+    s->crackleAmp  = 0.0f;
+    s->dropoutLeft = 0;
+    s->signalGain  = 1.0f;
+    s->pickupEnv   = 0.0f;
+    s->pickupCap   = 1.0f;
 }
 
 static RadioState* find_radio_slot(anyID id, int create)
@@ -807,46 +828,182 @@ static inline const RadioSnapshot* get_active_radio(void)
     return &g_RadioSnap[(idx & 1)];
 }
 
-/* Static/hiss generator: driven by quality only; optional SNR scaling with volume */
-static void radio_make_static(RadioState* st, float* out, int n, float volume01, float quality01)
+/* Weak-signal radio, driven by the signal quality (ConnectionQuality: distance and terrain):
+   - hiss: steady band-limited white noise. Its level follows the quality only, never the audio, so it
+     doesn't pump; it stays under the voice and the sender's game audio.
+   - crackle: short random pops, rare on a good signal and frequent on a bad one.
+   - dropouts: below STATIC_DROPOUT_Q the voice now and then cuts out for a moment, and the hiss fills the
+     gap ("you're breaking up").
+   The static also fades in over the first moments of a transmission instead of starting with a hard edge. */
+#define STATIC_HISS_FLOOR 0.010f       /* hiss on a perfect signal */
+#define STATIC_HISS_MAX 0.18f          /* hiss on the weakest signal */
+#define STATIC_CRACKLE_RATE 40.0f      /* pops per second on the weakest signal (falls with the square of the quality) */
+#define STATIC_CRACKLE_LEVEL 0.45f     /* loudest pop */
+#define STATIC_CRACKLE_MIN_MS 1.0f
+#define STATIC_CRACKLE_MAX_MS 6.0f
+#define STATIC_DROPOUT_Q 0.40f         /* dropouts below this quality */
+#define STATIC_DROPOUT_RATE 6.0f       /* dropouts per second at quality 0 (the edge of range): words go missing */
+#define STATIC_DROPOUT_MIN_MS 30.0f
+#define STATIC_DROPOUT_MAX_MS 200.0f   /* longest dropout, at quality 0; shorter on a less weak signal */
+#define STATIC_DROPOUT_RAMP_MS 3.0f    /* the voice fades out and back in this fast, without clicking */
+#define STATIC_DROPOUT_HISS 1.6f       /* the hiss comes up this much while the voice is gone */
+#define STATIC_FADE_IN_MS 120.0f
+#define STATIC_GAP_MS 300              /* no audio from this talker for this long: the next audio is a new transmission */
+
+/* voice: the received audio for these samples (dropouts are applied to it in place, NULL for none).
+   out: the static to add to it. */
+static void radio_weak_signal(RadioState* st, float* voice, float* out, int n, float quality01)
 {
     if (n <= 0)
         return;
 
-    const float q = clampf(quality01, 0.0f, 1.0f);
+    const float q    = clampf(quality01, 0.0f, 1.0f);
+    const float loss = 1.0f - q;
 
-    /* Intensity: more noise as quality drops; no dependence on volume */
-    const float inv_eff = 0.90f * (1.0f - q);
+    static float rampStep = 0.0f, fadeStep = 0.0f;
+    if (rampStep == 0.0f) {
+        rampStep = 1.0f / (TS_SAMPLE_RATE * STATIC_DROPOUT_RAMP_MS / 1000.0f);
+        fadeStep = 1.0f / (TS_SAMPLE_RATE * STATIC_FADE_IN_MS / 1000.0f);
+    }
 
-    /* Spectral balance stays similar to before */
-    const float pinkAmt  = 0.25f * inv_eff;
-    const float whiteAmt = 0.0025f * inv_eff;
-    const float bedWhite = 0.0045f * (1.0f - q);
+    const unsigned long now = GetTickCount();
+    if (now - st->lastStaticTick > STATIC_GAP_MS) {
+        st->staticFade  = 0.0f;
+        st->dropoutLeft = 0;
+        st->signalGain  = 1.0f;
+    }
+    st->lastStaticTick = now;
+
+    /* Squared: a signal only somewhat weakened (by a ridge or two) gets little hiss; it builds near the edge */
+    const float hissGain     = STATIC_HISS_FLOOR + (STATIC_HISS_MAX - STATIC_HISS_FLOOR) * loss * loss;
+    const float crackleChance = STATIC_CRACKLE_RATE * loss * loss / TS_SAMPLE_RATE;
+    const float crackleLevel = STATIC_CRACKLE_LEVEL * (0.3f + 0.7f * loss);
+    float dropoutChance      = 0.0f;
+    float dropoutMaxMs       = STATIC_DROPOUT_MIN_MS;
+    if (voice && q < STATIC_DROPOUT_Q) {
+        const float weak = (STATIC_DROPOUT_Q - q) / STATIC_DROPOUT_Q;
+        dropoutChance    = STATIC_DROPOUT_RATE * weak * sqrtf(weak) / TS_SAMPLE_RATE;
+        dropoutMaxMs     = STATIC_DROPOUT_MIN_MS + (STATIC_DROPOUT_MAX_MS - STATIC_DROPOUT_MIN_MS) * weak;
+    }
 
     for (int i = 0; i < n; ++i) {
-        float pn = pink_tick(&st->pink) * pinkAmt;
-        float wn = white_signed(&st->pink.rng) * (whiteAmt + bedWhite);
-        out[i]   = pn + wn;
+        float x = white_signed(&st->pink.rng) * hissGain;
+
+        /* Crackle: a short burst of noise that dies away fast */
+        if (st->crackleLeft <= 0 && frand_u(&st->pink.rng) < crackleChance) {
+            const float ms  = STATIC_CRACKLE_MIN_MS + (STATIC_CRACKLE_MAX_MS - STATIC_CRACKLE_MIN_MS) * frand_u(&st->pink.rng);
+            st->crackleLeft = (int)(ms * TS_SAMPLE_RATE / 1000.0f);
+            st->crackleAmp  = crackleLevel * (0.4f + 0.6f * frand_u(&st->pink.rng));
+        }
+        if (st->crackleLeft > 0) {
+            x += white_signed(&st->pink.rng) * st->crackleAmp;
+            st->crackleAmp *= 0.996f;
+            st->crackleLeft--;
+        }
+
+        /* Dropouts: the voice ramps out, stays out a moment, ramps back */
+        if (dropoutChance > 0.0f && st->dropoutLeft <= 0 && frand_u(&st->pink.rng) < dropoutChance) {
+            const float ms  = STATIC_DROPOUT_MIN_MS + (dropoutMaxMs - STATIC_DROPOUT_MIN_MS) * frand_u(&st->pink.rng);
+            st->dropoutLeft = (int)(ms * TS_SAMPLE_RATE / 1000.0f);
+        }
+        const float target = (st->dropoutLeft > 0) ? 0.0f : 1.0f;
+        if (st->dropoutLeft > 0)
+            st->dropoutLeft--;
+        if (st->signalGain < target)
+            st->signalGain = (st->signalGain + rampStep > target) ? target : st->signalGain + rampStep;
+        else if (st->signalGain > target)
+            st->signalGain = (st->signalGain - rampStep < target) ? target : st->signalGain - rampStep;
+        if (voice)
+            voice[i] *= st->signalGain;
+
+        /* The hiss comes up while the voice is gone */
+        x *= 1.0f + (STATIC_DROPOUT_HISS - 1.0f) * (1.0f - st->signalGain);
+        out[i] = x;
     }
 
     for (int i = 0; i < n; ++i)
-        out[i] = biquad_tick(&st->lp_n, out[i]);
-    for (int i = 0; i < n; ++i)
-        out[i] = biquad_tick(&st->hp_n, out[i]);
-
-    /* Keep SNR reasonably consistent across volume steps (optional but nice) */
-    const float snrComp = 0.45f + 0.55f * clampf(volume01, 0.0f, 1.0f);
-
-    /* Final noise gain: largely quality-driven, then SNR-compensated by volume */
-    const float noiseGain = (0.28f * (1.0f - q) + 0.015f) * snrComp;
+        out[i] = biquad_tick(&st->hp_n, biquad_tick(&st->lp_n, out[i]));
 
     for (int i = 0; i < n; ++i) {
-        float s = out[i] * noiseGain;
-        if (s > 1.0f)
-            s = 1.0f;
-        if (s < -1.0f)
-            s = -1.0f;
-        out[i] = s;
+        if (st->staticFade < 1.0f)
+            st->staticFade = (st->staticFade + fadeStep > 1.0f) ? 1.0f : st->staticFade + fadeStep;
+        out[i] = clampf(out[i] * st->staticFade, -1.0f, 1.0f);
+    }
+}
+
+/* Voice pickup cap: a player picked up by a sender's mic never plays louder than PICKUP_MAX_RATIO of that
+   sender's recent level on the same frequency, whatever their mic gain or how close they stand. Senders are
+   tracked by frequency (their entries are processed on the same audio thread as the pickups); the level
+   decays slowly, so a pickup doesn't jump up in the sender's pauses between words, and fades out if the
+   sender goes quiet. */
+#define PICKUP_MAX_RATIO 0.5f           /* -6 dB under the sender */
+#define PICKUP_SENDER_RELEASE_MS 1500.0f
+#define PICKUP_ENV_RELEASE_MS 100.0f
+#define PICKUP_CAP_ATTACK_MS 5.0f
+#define PICKUP_CAP_RELEASE_MS 60.0f
+#define PICKUP_SENDERS_MAX 16
+
+typedef struct {
+    char  freq[64];
+    float env;
+} PickupSender;
+
+static PickupSender g_pickupSenders[PICKUP_SENDERS_MAX];
+
+static PickupSender* pickup_sender(const char* freq, int create)
+{
+    int quietest = 0;
+    for (int i = 0; i < PICKUP_SENDERS_MAX; ++i) {
+        if (g_pickupSenders[i].freq[0] && strcmp(g_pickupSenders[i].freq, freq) == 0)
+            return &g_pickupSenders[i];
+        if (g_pickupSenders[i].env < g_pickupSenders[quietest].env)
+            quietest = i;
+    }
+    if (!create)
+        return NULL;
+    PickupSender* slot = &g_pickupSenders[quietest];
+    strncpy(slot->freq, freq, sizeof(slot->freq) - 1);
+    slot->freq[sizeof(slot->freq) - 1] = '\0';
+    slot->env = 0.0f;
+    return slot;
+}
+
+/* A sender's voice (a normal radio or speaker entry), as it will be heard */
+static void pickup_track_sender(const char* freq, const float* voice, int n)
+{
+    if (!freq[0])
+        return;
+    static float rel = 0.0f;
+    if (rel == 0.0f)
+        rel = expf(-1.0f / (TS_SAMPLE_RATE * PICKUP_SENDER_RELEASE_MS / 1000.0f));
+    PickupSender* sender = pickup_sender(freq, 1);
+    float env = sender->env;
+    for (int i = 0; i < n; ++i) {
+        const float a = fabsf(voice[i]);
+        env = (a > env) ? a : env * rel;
+    }
+    sender->env = env;
+}
+
+/* A picked-up voice, already scaled by its pickup gain: held under its sender */
+static void pickup_cap(RadioState* st, const char* freq, float* voice, int n)
+{
+    static float envRel = 0.0f, capAtt = 0.0f, capRel = 0.0f;
+    if (envRel == 0.0f) {
+        envRel = expf(-1.0f / (TS_SAMPLE_RATE * PICKUP_ENV_RELEASE_MS / 1000.0f));
+        capAtt = 1.0f - expf(-1.0f / (TS_SAMPLE_RATE * PICKUP_CAP_ATTACK_MS / 1000.0f));
+        capRel = 1.0f - expf(-1.0f / (TS_SAMPLE_RATE * PICKUP_CAP_RELEASE_MS / 1000.0f));
+    }
+    const PickupSender* sender = pickup_sender(freq, 0);
+    const float ceiling = PICKUP_MAX_RATIO * (sender ? sender->env : 0.0f);
+    for (int i = 0; i < n; ++i) {
+        const float a = fabsf(voice[i]);
+        st->pickupEnv = (a > st->pickupEnv) ? a : st->pickupEnv * envRel;
+        float target = 1.0f;
+        if (st->pickupEnv > ceiling)
+            target = (st->pickupEnv > 1e-6f) ? ceiling / st->pickupEnv : 0.0f;
+        st->pickupCap += (target - st->pickupCap) * ((target < st->pickupCap) ? capAtt : capRel);
+        voice[i] *= st->pickupCap;
     }
 }
 
@@ -863,7 +1020,7 @@ static void radio_color_voice_only(RadioState* st, float* buf, int n, float volu
 
     /* Ring-mod amount grows as quality drops (0.18..0.50) */
     const float q    = clampf(quality01, 0.0f, 1.0f);
-    const float rmix = clampf(0.18f + 0.32f * (1.0f - q), 0.0f, 0.6f);
+    const float rmix = clampf(0.10f + 0.15f * (1.0f - q), 0.0f, 0.6f); /* gentler: it made weak signals warble */
     ring_mix(&st->rm, buf, n, TS_SAMPLE_RATE, RADIO_RINGMOD_HZ, rmix);
 
     /* Distortion threshold lowers slightly as quality drops */
@@ -1489,15 +1646,19 @@ static void apply_speaker_dsp(anyID clientID, const VonEntry* e, short* samples,
             }
 
             radio_color_voice_only(st, voice, n, 1.0f, q);
-            /* A voice pickup is quieter, and rides on its sender's static */
-            const float pickup = (e->pickup > 0.0f) ? e->pickup : 1.0f;
-            if (e->pickup > 0.0f)
+            /* A voice pickup is quieter, rides on its sender's static and stays under the sender */
+            if (e->pickup > 0.0f) {
+                for (int i = 0; i < n; ++i)
+                    voice[i] *= e->pickup;
                 memset(hiss, 0, sizeof(float) * (size_t)n);
-            else
-                radio_make_static(st, hiss, n, q, q);
+                pickup_cap(st, e->txFreq, voice, n);
+            } else {
+                radio_weak_signal(st, voice, hiss, n, q);
+                pickup_track_sender(e->txFreq, voice, n);
+            }
 
             for (int i = 0; i < n; ++i) {
-                const float s     = clampf(voice[i] * pickup + hiss[i], -1.0f, 1.0f) * SPEAKER_PRE_GAIN;
+                const float s     = clampf(voice[i] + hiss[i], -1.0f, 1.0f) * SPEAKER_PRE_GAIN;
                 const short out   = clamp_i16(s * 32767.0f);
                 if (channels <= 1) {
                     samples[processed + i] = out;
@@ -3747,11 +3908,15 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
                 for (int i = 0; i < n; ++i)
                     voice[i] *= voiceGain;
 
-                /* A voice pickup rides on its sender's transmission, which already carries the static */
-                if (e->pickup > 0.0f)
+                /* A voice pickup rides on its sender's transmission, which already carries the static, and
+                   stays under the sender */
+                if (e->pickup > 0.0f) {
                     memset(hiss, 0, sizeof(float) * (size_t)n);
-                else
-                    radio_make_static(st, hiss, n, q, q);
+                    pickup_cap(st, e->txFreq, voice, n);
+                } else {
+                    radio_weak_signal(st, voice, hiss, n, q);
+                    pickup_track_sender(e->txFreq, voice, n);
+                }
 
                 if (channels <= 1) {
                     for (int i = 0; i < n; ++i) {

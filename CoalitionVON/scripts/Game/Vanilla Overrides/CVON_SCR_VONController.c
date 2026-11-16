@@ -457,6 +457,7 @@ modded class SCR_VONController
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
 					container.m_iTimeDeviation = radioComp.m_iTimeDeviation;
+					container.m_iInterference = radioComp.GetInterferencePercent();
 					switch (radioComp.m_eStereo)
 					{
 						case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{E3B4231783ABA914}UI/sounds/beepstart.wav"); break;}
@@ -482,6 +483,7 @@ modded class SCR_VONController
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
 					container.m_iTimeDeviation = radioComp.m_iTimeDeviation;
+					container.m_iInterference = radioComp.GetInterferencePercent();
 					switch (radioComp.m_eStereo)
 					{
 						case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{E3B4231783ABA914}UI/sounds/beepstart.wav"); break;}
@@ -507,6 +509,7 @@ modded class SCR_VONController
 					container.m_iRadioId = RplComponent.Cast(radio.FindComponent(RplComponent)).Id();
 					container.m_sFactionKey = radioComp.m_sFactionKey;
 					container.m_iTimeDeviation = radioComp.m_iTimeDeviation;
+					container.m_iInterference = radioComp.GetInterferencePercent();
 					switch (radioComp.m_eStereo)
 					{
 						case CVON_EStereo.BOTH:  {AudioSystem.PlaySound("{E3B4231783ABA914}UI/sounds/beepstart.wav"); break;}
@@ -575,10 +578,54 @@ modded class SCR_VONController
 
 		float blockedSamples = blocked;
 		float shadowShare = blockedSamples / (sampleCount - 1);
-		float loss = 0.6 * Math.Clamp(maxDepth / TERRAIN_FULL_BLOCK_DEPTH, 0, 1)
+		// How badly the path is blocked: nothing for terrain that only grazes the line of sight (the first
+		// TERRAIN_GRACE_DEPTH m), full at TERRAIN_FULL_BLOCK_DEPTH. Every part of the loss scales with it, so a
+		// small hill between two radios costs little; the extra ridges and the share of the path in shadow only
+		// add up behind real high ground.
+		// The strength (server setting x the link's radios) also sets what counts as a hill: at 0.5 the
+		// heights double (6 m before anything is lost, 80 m for the full loss), at 2 they halve. Scaling the
+		// loss alone barely changed small hills, whose loss is small either way.
+		float graceDepth = TERRAIN_GRACE_DEPTH / strength;
+		float fullDepth = TERRAIN_FULL_BLOCK_DEPTH / strength;
+		float severity = Math.Clamp((maxDepth - graceDepth) / (fullDepth - graceDepth), 0, 1);
+		float loss = severity * (0.6
 			+ 0.15 * Math.ClampInt(ridges - 1, 0, 2)
-			+ 0.25 * Math.Clamp(shadowShare * 2, 0, 1);
+			+ 0.25 * Math.Clamp(shadowShare * 2, 0, 1));
 		return 1 - Math.Clamp(loss * strength, 0, 0.95);
+	}
+
+	//How much terrain gets in the way of this link: the average of the sending radio's and the receiving
+	//radio's interference (CVON_RadioComponent.m_fInterference). The receiver is a speaker's radio for a
+	//speaker entry, else the best of our radios on that frequency.
+	//==========================================================================================================================================================================
+	float GetLinkInterference(CVON_VONContainer container)
+	{
+		float senderInterference = container.m_iInterference / 100.0;
+
+		float receiverInterference = -1;
+		if (container.m_eVonType == CVON_EVONType.SPEAKER && container.m_SpeakerEntity)
+		{
+			CVON_RadioComponent speakerRadio = CVON_RadioComponent.Cast(container.m_SpeakerEntity.FindComponent(CVON_RadioComponent));
+			if (speakerRadio)
+				receiverInterference = speakerRadio.m_fInterference;
+		}
+		else
+		{
+			foreach (IEntity radio: m_PlayerController.m_aRadios)
+			{
+				if (!radio)
+					continue;
+				CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+				if (!radioComp || radioComp.m_sFrequency != container.m_sFrequency)
+					continue;
+				if (receiverInterference < 0 || radioComp.m_fInterference < receiverInterference)
+					receiverInterference = radioComp.m_fInterference;
+			}
+		}
+		if (receiverInterference < 0)
+			receiverInterference = 1;
+
+		return (senderInterference + receiverInterference) * 0.5;
 	}
 
 	//Terrain factor for an entry, cached: recomputed every TERRAIN_INTERVAL or once an end moved far enough
@@ -587,7 +634,7 @@ modded class SCR_VONController
 	{
 		if (!m_VONGameModeComponent)
 			return 1;
-		float strength = m_VONGameModeComponent.GetTerrainBlockStrength();
+		float strength = m_VONGameModeComponent.GetTerrainInterferenceStrength();
 		if (strength <= 0)
 			return 1;
 
@@ -595,7 +642,7 @@ modded class SCR_VONController
 			|| vector.DistanceSq(sender, container.m_vTerrainFrom) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK;
 		if (m_fTime >= container.m_fNextTerrainTime || moved)
 		{
-			container.m_fTerrainFactor = ComputeTerrainFactor(sender, receiver, strength);
+			container.m_fTerrainFactor = ComputeTerrainFactor(sender, receiver, strength * GetLinkInterference(container));
 			container.m_fNextTerrainTime = m_fTime + TERRAIN_INTERVAL;
 			container.m_vTerrainFrom = sender;
 			container.m_vTerrainTo = receiver;
@@ -857,6 +904,7 @@ modded class SCR_VONController
 	static const int   TERRAIN_MAX_SAMPLES = 96;
 	static const float TERRAIN_ANTENNA_HEIGHT = 1.6;	// m above the position of each radio
 	static const float TERRAIN_FULL_BLOCK_DEPTH = 40;	// m of hill above the line of sight for the full ridge loss
+	static const float TERRAIN_GRACE_DEPTH = 3;		// m of hill above the line of sight that costs nothing (a hill that only grazes it)
 	// TeamSpeak client IDs currently talking (VONTalking.json). Without it everyone counts as talking.
 	ref set<int> m_TalkingClientIds = new set<int>();
 

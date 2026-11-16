@@ -30,10 +30,10 @@ class CVON_ServerSettings
 	bool m_bRadioVoicePickup;
 
 	[Attribute("1", desc: "Hills and mountains between sender and receiver weaken radio signals")]
-	bool m_bTerrainBlocksRadio;
+	bool m_bTerrainInterference;
 
-	[Attribute("1", UIWidgets.Slider, desc: "How much terrain weakens radio signals (0 = none, 1 = normal, 2 = double)", params: "0 2 0.05")]
-	float m_fTerrainBlockStrength;
+	[Attribute("0.5", UIWidgets.Slider, desc: "How much terrain weakens radio signals (0 = none, 0.5 = normal, 1 = strongest)", params: "0 1 0.05")]
+	float m_fTerrainInterferenceStrength;
 
 	[Attribute(SCR_Enum.GetDefault(CVON_ERadioDuplex.HALF), UIWidgets.ComboBox, desc: "0 = half duplex: a radio can't receive while its user transmits on it. 1 = full duplex: radios receive and transmit at the same time", enums: ParamEnumArray.FromEnum(CVON_ERadioDuplex))]
 	CVON_ERadioDuplex m_eRadioDuplex;
