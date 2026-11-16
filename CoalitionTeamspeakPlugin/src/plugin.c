@@ -2448,7 +2448,7 @@ static void reload_von_if_changed(void)
    updates (radio talkers that one of our radios receives) and queues them; the mixed playback callback
    plays them, panned to the ear of the radio that received them and at its volume.
 
-   Open and close sounds are a server setting (g_SquelchTones); the cut-off has its own, which the game
+   Open and close sounds follow g_SquelchTones (the server setting and the player's own); the cut-off has its own, which the game
    applies by not marking cut-offs at all.
 --------------------------------------------------------------------------- */
 enum { SQ_OPEN = 0, SQ_CLOSE = 1, SQ_CUT = 2 };

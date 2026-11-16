@@ -741,6 +741,13 @@ modded class SCR_VONController
 		}
 	}
 
+	//Squelch tones play for this player: on for the server and in their own settings
+	//==========================================================================================================================================================================
+	bool IsSquelchActive()
+	{
+		return m_bSquelchSetting && IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH);
+	}
+
 	//A server setting in force (CVON_ServerSettings); all on outside a CVON game mode
 	//==========================================================================================================================================================================
 	bool IsServerSettingOn(int setting)
@@ -833,6 +840,9 @@ modded class SCR_VONController
 	// and half duplex (IsBlockedByOwnTransmission) are worked out here. The server settings switch each one.
 	bool m_bPluginImmersion = false;
 	bool m_bLastWrittenSquelch = false;
+	// Incoming squelch tones: the server's setting and the player's own ("Radio Squelch Tones", Coalition VON
+	// settings tab), refreshed once a second like the game audio setting
+	bool m_bSquelchSetting = true;
 	// The next radio release is a cut-off (killed or knocked out mid-transmission)
 	bool m_bCutOffOnDeactivate = false;
 
@@ -903,6 +913,7 @@ modded class SCR_VONController
 		if (!m_bFirstConnect)
 		{
 			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
+			m_bSquelchSetting = CVON_GameSettings.IsSquelchTonesEnabled();
 			ReadPluginFiles();
 			WriteJSON(true, true);
 			m_bFirstConnect = true;
@@ -965,6 +976,7 @@ modded class SCR_VONController
 		{
 			m_fServerDataBuffer = 0;
 			m_bGameAudioSetting = CVON_GameSettings.IsRadioGameAudioEnabled();
+			m_bSquelchSetting = CVON_GameSettings.IsSquelchTonesEnabled();
 		}
 
 		// VONData is written at ~20 Hz, but straight away when push-to-talk changes
@@ -2005,7 +2017,7 @@ modded class SCR_VONController
 					 (m_bPluginReadsBinary != m_bLastWrittenBinary) ||
 					 (IsRadioGameAudioActive() != m_bLastWrittenRadioMix) ||
 					 (m_bGameAudioSetting != m_bLastWrittenGameAudio) ||
-					 (IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH) != m_bLastWrittenSquelch);
+					 (IsSquelchActive() != m_bLastWrittenSquelch);
 
 		// Work out each entry. Players who aren't talking are refreshed every SILENT_GAIN_DIVIDER-th tick,
 		// and the muffling traces run on their own slower schedule per sender.
@@ -2131,7 +2143,7 @@ modded class SCR_VONController
 		m_bLastWrittenBinary = m_bPluginReadsBinary;
 		m_bLastWrittenRadioMix = IsRadioGameAudioActive();
 		m_bLastWrittenGameAudio = m_bGameAudioSetting;
-		m_bLastWrittenSquelch = IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH);
+		m_bLastWrittenSquelch = IsSquelchActive();
 	}
 
 	//VONData.json: what every plugin version reads
@@ -2148,7 +2160,7 @@ modded class SCR_VONController
 		}
 		if (m_bPluginImmersion)
 		{
-			VONSave.WriteValue("SquelchTones", IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH));
+			VONSave.WriteValue("SquelchTones", IsSquelchActive());
 		}
 		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
 		{
@@ -2224,7 +2236,7 @@ modded class SCR_VONController
 			flags = flags | 2;
 		if (m_bGameAudioSetting)
 			flags = flags | 4;
-		if (IsServerSettingOn(CVON_VONGameModeComponent.SETTING_SQUELCH))
+		if (IsSquelchActive())
 			flags = flags | 8;
 
 		// Header; the entry and string counts are filled in below

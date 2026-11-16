@@ -5,6 +5,7 @@
 class CVON_SettingsSubMenu : SCR_SettingsSubMenuBase
 {
 	protected static const string HINT_WIDGET = "RadioGameAudioHint";
+	protected static const string SQUELCH_HINT_WIDGET = "SquelchTonesHint";
 
 	//==========================================================================================================================================================================
 	override void OnTabCreate(Widget menuRoot, ResourceName buttonsLayout, int index)
@@ -18,6 +19,12 @@ class CVON_SettingsSubMenu : SCR_SettingsSubMenuBase
 			m_aSettingsBindings.Insert(new SCR_SettingBindingGameplay(CVON_GameSettings.MODULE, CVON_GameSettings.RADIO_GAME_AUDIO, CVON_GameSettings.RADIO_GAME_AUDIO));
 		else
 			ShowEnforced(CVON_GameSettings.RADIO_GAME_AUDIO, HINT_WIDGET, enforcement == CVON_ESettingEnforcement.FORCE_ON);
+
+		//Squelch: the player's choice, unless the server has turned it off for everyone
+		if (CVON_GameSettings.IsServerSquelchOff())
+			ShowEnforced(CVON_GameSettings.SQUELCH_TONES, SQUELCH_HINT_WIDGET, false);
+		else
+			m_aSettingsBindings.Insert(new SCR_SettingBindingGameplay(CVON_GameSettings.MODULE, CVON_GameSettings.SQUELCH_TONES, CVON_GameSettings.SQUELCH_TONES));
 
 		LoadSettings();
 	}

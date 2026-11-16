@@ -81,6 +81,37 @@ HorizontalLayoutWidgetClass {
           Font "{E2CBA6F76AAA42AF}UI/Fonts/Roboto/Roboto_Regular.fnt"
          }
         }
+        ButtonWidgetClass "{6A1F3C9E2B7D4E58}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+         Name "m_bSquelchTones"
+         Slot LayoutSlot "{7C2E5B8A1D9F3064}" {
+          Padding 4 16 4 4
+         }
+         components {
+          SCR_SpinBoxComponent "{3B8D6F2A9E1C5047}" {
+           m_sLabel "Radio Squelch Tones"
+           m_sLabelLayout "{F003823FF141983C}UI/layouts/Menus/SettingsMenu/CustomWidgets/SettingsLabel.layout"
+           m_aElementNames {
+            "#AR-UI_No" "#AR-UI_Yes"
+           }
+           m_bUseLightArrows 1
+           m_bCycleMode 1
+          }
+         }
+        }
+        TextWidgetClass "{9E4A2C7B5F1D8036}" {
+         Name "SquelchTonesHint"
+         Slot LayoutSlot "{2D7F9A3C6B1E4085}" {
+          Padding 39 8 39 4
+         }
+         Color 0.456 0.456 0.456 1
+         Text "A short squelch burst when an incoming radio transmission opens, and a squelch tail when it closes. Only affects what you hear."
+         "Font Size" 18
+         "Min Font Size" 14
+         Wrap 1
+         FontProperties FontProperties "{5A8C1E7D3F2B6094}" {
+          Font "{E2CBA6F76AAA42AF}UI/Fonts/Roboto/Roboto_Regular.fnt"
+         }
+        }
        }
       }
      }
