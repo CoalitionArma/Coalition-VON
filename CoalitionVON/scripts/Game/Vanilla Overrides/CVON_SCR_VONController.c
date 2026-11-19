@@ -1415,9 +1415,10 @@ modded class SCR_VONController
 	//==========================================================================================================================================================================
 	static const float MAX_OUT_GAIN = 2.0;				// safety cap on per-ear gain (the loudest tier is +5 dB)
 	static const float VOICE_REFERENCE_DISTANCE = 1.5;	// full volume up to this distance (m), or 30% of a shorter range
-	static const float VOICE_ROLLOFF_DB = 36.0;			// how much quieter a voice is by the start of the edge fade...
-	static const float VOICE_ROLLOFF_SHAPE = 0.8;		// ...falling steadily in dB across the range; below 1 drops a little faster early on
-	static const float VOICE_EDGE_FADE = 0.15;			// the last 15% of the voice range fades to silence
+	static const float VOICE_ROLLOFF_DB = 52.0;			// how much quieter a voice would be at the very edge of its range...
+	static const float VOICE_ROLLOFF_SHAPE = 1.5;		// ...falling in dB along this curve; above 1 stays louder up close and fades out gently further away
+	static const float VOICE_EDGE_FADE = 0.06;			// the last 6% fades to silence, from about -47 dB (already inaudible), so there's no cliff
+														// (was 36 dB, 0.8, 15%: that fade began at about -31 dB, so voices cut out over the last few metres)
 	static const float OCCLUSION_DB_BUILDING = -8.0;	// talker or listener inside a building (the plugin also dulls the sound)
 	static const float OCCLUSION_DB_VEHICLE = -12.0;	// ... inside a vehicle
 	static const float STEREO_CROSSFEED = 0.25;			// share of each ear's signal also heard in the other (0 = fully one ear)
@@ -1452,9 +1453,10 @@ modded class SCR_VONController
 		return loweredDecibels * (OCCLUSION_DB_BUILDING / CVON_DB_ATTEN_BUILDING);
 	}
 
-	//Full volume up close, then a steady drop in dB across the whole range (about -10 dB a quarter of the way
-	//out, -20 dB at half, -28 dB at three quarters), so a voice gets clearly quieter all the way out instead of
-	//staying loud until the edge. The last VOICE_EDGE_FADE then fades it to silence, from an already quiet level.
+	//Full volume up close, then a drop in dB that starts gently and keeps going all the way out (on the 20 m
+	//Normal range: -3 dB at 4 m, -16 dB at 10 m, -29 dB at 14 m, -40 dB at 17 m, -48 dB at 19 m), so a voice
+	//fades away over the far third of its range instead of cutting out at the edge: at most about 4 dB a metre
+	//on Normal while it can still be heard. The last VOICE_EDGE_FADE takes it from inaudible to silence.
 	static float DistanceGain(float d_m, float range_m)
 	{
 		if (range_m <= 0.01 || d_m >= range_m)

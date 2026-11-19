@@ -3916,6 +3916,14 @@ PLUGINS_EXPORTDLL void ts3plugin_onEditPostProcessVoiceDataEvent(uint64 sch, any
                 } else {
                     radio_weak_signal(st, voice, hiss, n, q);
                     pickup_track_sender(e->txFreq, voice, n);
+
+                    /* The static comes out of the same radio as the voice, so its volume knob turns it down
+                       too (the voice already has vol01 in it). Otherwise turning a radio down left the hiss,
+                       crackle and dropout noise at full level, louder than the voice. Squelch bursts scale
+                       the same way (squelch_start_voice). */
+                    const float staticGain = clampf(vol01, 0.0f, 1.0f);
+                    for (int i = 0; i < n; ++i)
+                        hiss[i] *= staticGain;
                 }
 
                 if (channels <= 1) {
