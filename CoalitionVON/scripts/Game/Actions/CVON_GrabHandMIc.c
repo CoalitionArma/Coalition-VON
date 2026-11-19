@@ -1,8 +1,24 @@
 //"Grab Handset" / "Return Handset" on someone's back (Character_Base "Back" context): take the handset of the
 //manpack radio they carry and talk and listen on it (see CVON_Manpack). Only one person holds it at a time,
 //and the cord pulls it out of your hand past CVON_Manpack.HANDSET_CORD_LENGTH.
+//On a station (CVON_StationaryRadioComponent) it is "Pick Up Handset" / "Return Handset", within the set's
+//m_fHandsetReach.
 class CVON_GrabHandMic: SCR_ScriptedUserAction
 {
+	//------------------------------------------------------------------------------------------------
+	//The manpack the owner carries, or the station the owner is
+	protected CVON_RadioComponent GetRadio()
+	{
+		IEntity owner = GetOwner();
+		if (!owner)
+			return null;
+
+		CVON_RadioComponent radio = CVON_Manpack.GetManpackRadio(owner);
+		if (!radio && !ChimeraCharacter.Cast(owner))
+			radio = CVON_StationaryRadioComponent.Cast(owner.FindComponent(CVON_StationaryRadioComponent));
+		return radio;
+	}
+
 	//------------------------------------------------------------------------------------------------
 	override void PerformAction(IEntity pOwnerEntity, IEntity pUserEntity)
 	{
@@ -25,7 +41,7 @@ class CVON_GrabHandMic: SCR_ScriptedUserAction
 		if (!carrier || carrier == user)
 			return false;
 
-		CVON_RadioComponent radio = CVON_Manpack.GetManpackRadio(carrier);
+		CVON_RadioComponent radio = GetRadio();
 		if (!radio)
 			return false;
 
@@ -33,15 +49,18 @@ class CVON_GrabHandMic: SCR_ScriptedUserAction
 		if (radio.GetHandsetHolder() && !radio.IsHandsetHeldBy(user))
 			return false;
 
-		return true;
+		CVON_StationaryRadioComponent station = CVON_StationaryRadioComponent.Cast(radio);
+		return !station || station.IsHandsetHeldBy(user) || station.IsWithinReach(user, station.m_fHandsetReach);
 	}
 
 	//------------------------------------------------------------------------------------------------
 	override bool GetActionNameScript(out string outName)
 	{
-		CVON_RadioComponent radio = CVON_Manpack.GetManpackRadio(GetOwner());
+		CVON_RadioComponent radio = GetRadio();
 		if (radio && radio.IsHandsetHeldBy(SCR_PlayerController.GetLocalControlledEntity()))
 			outName = "Return Handset";
+		else if (CVON_StationaryRadioComponent.Cast(radio))
+			outName = "Pick Up Handset";
 		else
 			outName = "Grab Handset";
 		return true;

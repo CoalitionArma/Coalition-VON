@@ -250,8 +250,8 @@ modded class SCR_VONController
 		if ((!radio || !radio.CanUseSpeaker()) && m_PlayerController.m_aRadios.Count() > 0 && m_PlayerController.m_aRadios.Get(0))
 		{
 			radio = CVON_RadioComponent.Cast(m_PlayerController.m_aRadios.Get(0).FindComponent(CVON_RadioComponent));
-			// Someone else's (a held handset) isn't ours to switch
-			if (radio && radio.GetCarrier() != m_Player)
+			// Someone else's (a held handset) isn't ours to switch; a station is, while we hold its handset
+			if (radio && radio.GetCarrier() != m_Player && !(CVON_StationaryRadioComponent.Cast(radio) && radio.IsHandsetHeldBy(m_Player)))
 				radio = null;
 		}
 		if (!radio || !radio.CanUseSpeaker())
@@ -1921,6 +1921,9 @@ modded class SCR_VONController
 		}
 		CVON_RadioComponent speakerRadio = CVON_RadioComponent.Cast(container.m_SpeakerEntity.FindComponent(CVON_RadioComponent));
 		if (!speakerRadio)
+			return;
+		//A station's speaker switched off or retuned mid-call goes quiet (the server keeps it as a receiver)
+		if (CVON_StationaryRadioComponent.Cast(speakerRadio) && (!speakerRadio.HasActiveSpeaker() || !speakerRadio.Receives(container)))
 			return;
 		IEntity speakerSource = speakerRadio.GetSpeakerEntity();
 		if (!speakerSource)

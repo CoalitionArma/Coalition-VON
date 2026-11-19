@@ -156,6 +156,12 @@ modded class SCR_PlayerController
 		if (this == GetGame().GetPlayerController())
 		{
 			AttachVehicleRadio(to);
+			//A station's handset only while we still hold it: a respawned character doesn't keep the old one's
+			CVON_StationaryRadioComponent station;
+			if (m_HandsetRadio)
+				station = CVON_StationaryRadioComponent.Cast(m_HandsetRadio.FindComponent(CVON_StationaryRadioComponent));
+			if (station && !station.IsHandsetHeldBy(to))
+				m_HandsetRadio = null;
 			if (m_HandsetRadio && !m_aRadios.Contains(m_HandsetRadio))
 				m_aRadios.Insert(m_HandsetRadio);
 		}
@@ -207,6 +213,18 @@ modded class SCR_PlayerController
 			m_aRadios.RemoveItemOrdered(radioEntity);
 			m_HandsetRadio = null;
 			SCR_HintManagerComponent.ShowCustomHint("Handset released", "Coalition VON", 2);
+
+			//Put down or pulled out of our hand mid-call on a station: stop talking on it. Not when we were
+			//killed: the server sends the cut-off, and a normal release from us could reach the receivers first.
+			if (CVON_StationaryRadioComponent.Cast(radio))
+			{
+				SCR_VONController vonController = SCR_VONController.Cast(FindComponent(SCR_VONController));
+				ChimeraCharacter holder = ChimeraCharacter.Cast(character);
+				if (vonController && vonController.m_CurrentVONContainer && vonController.m_CurrentVONContainer.m_eVonType == CVON_EVONType.RADIO
+					&& vonController.m_CurrentVONContainer.m_iRadioId == radio.GetRplId()
+					&& holder && holder.GetCharacterController() && holder.GetCharacterController().GetLifeState() == ECharacterLifeState.ALIVE)
+					vonController.DeactivateCVON();
+			}
 		}
 		else
 		{
@@ -239,7 +257,14 @@ modded class SCR_PlayerController
 		if (!carrier || carrier == user)
 			return;
 
+		//Not a manpack: a station, whose handset hangs on the set itself
 		CVON_RadioComponent radio = CVON_Manpack.GetManpackRadio(carrier);
+		CVON_StationaryRadioComponent station;
+		if (!radio)
+		{
+			station = CVON_StationaryRadioComponent.Cast(carrier.FindComponent(CVON_StationaryRadioComponent));
+			radio = station;
+		}
 		if (!radio)
 			return;
 
@@ -253,7 +278,13 @@ modded class SCR_PlayerController
 		if (radio.GetHandsetHolder())
 			return;
 
-		if (vector.Distance(user.GetOrigin(), carrier.GetOrigin()) > CVON_Manpack.HANDSET_CORD_LENGTH)
+		//A station's: alive, within its reach
+		if (station)
+		{
+			if (!station.IsWithinReach(user, station.m_fHandsetReach))
+				return;
+		}
+		else if (vector.Distance(user.GetOrigin(), carrier.GetOrigin()) > CVON_Manpack.HANDSET_CORD_LENGTH)
 			return;
 
 		//One handset at a time
@@ -358,7 +389,8 @@ modded class SCR_PlayerController
 		radio.KeyFillFromCrew(player);
 	}
 
-	//Only the crew (vehicle radio) or the carrier (manpack, handheld) can turn the speaker on or off
+	//Only the crew (vehicle radio), the carrier (manpack, handheld) or someone at the set (station) can turn the
+	//speaker on or off
 	//==========================================================================================================================================================================
 	void ToggleVehicleSpeaker(RplId radioId)
 	{
@@ -372,10 +404,18 @@ modded class SCR_PlayerController
 		if (!radio || !radio.CanUseSpeaker())
 			return;
 
-		//Vehicle radio: crew only. Carried radio: its carrier only.
+		//Station: anyone alive at the set or holding its handset, and the first military user keys it, as
+		//picking up its handset does. Vehicle radio: crew only. Carried radio: its carrier only.
 		IEntity player = GetControlledEntity();
+		CVON_StationaryRadioComponent station = CVON_StationaryRadioComponent.Cast(radio);
 		CVON_VehicleRadioComponent vehicleRadio = CVON_VehicleRadioComponent.Cast(radio);
-		if (vehicleRadio)
+		if (station)
+		{
+			if (!station.IsWithinReach(player, CVON_StationaryRadioComponent.SPEAKER_SWITCH_REACH) && !station.CanOperate(player))
+				return;
+			station.KeyFillFromFirstUser(player);
+		}
+		else if (vehicleRadio)
 		{
 			if (CVON_VehicleComms.GetOperatedRadio(player) != vehicleRadio)
 				return;
@@ -385,6 +425,14 @@ modded class SCR_PlayerController
 			return;
 		}
 		radio.ToggleSpeakerServer();
+	}
+
+	//Only a station's handset holder may switch or tune it; other radios are not checked here
+	//==========================================================================================================================================================================
+	protected bool MayOperate(CVON_RadioComponent radioComp)
+	{
+		CVON_StationaryRadioComponent station = CVON_StationaryRadioComponent.Cast(radioComp);
+		return !station || station.CanOperate(GetControlledEntity());
 	}
 
 	protected CVON_RadioComponent FindRadioComponent(RplId radioId)
@@ -528,6 +576,11 @@ modded class SCR_PlayerController
 	[RplRpc(RplChannel.Reliable, RplRcver.Server)] 
 	void RpcAsk_BroadcastLocalVONToServer(CVON_VONContainer VONContainer, int playerId, RplId radioId)
 	{
+		//A station: only its handset's holder, alive at the set, on the set's own net
+		CVON_StationaryRadioComponent station = CVON_StationaryRadioComponent.Cast(FindRadioComponent(radioId));
+		if (station && (playerId != GetPlayerId() || !station.CanOperate(GetControlledEntity()) || !station.Receives(VONContainer)))
+			return;
+
 		CVON_VONGameModeComponent.GetInstance().AddLocalVONBroadcasts(VONContainer, playerId, radioId);
 	}
 
@@ -587,6 +640,9 @@ modded class SCR_PlayerController
 		container.m_bPickup = false; // their own transmission replaces a pickup
 		container.m_eVonType = CVON_EVONType.SPEAKER;
 		container.m_sFrequency = VONContainer.m_sFrequency;
+		//A station's speaker checks the time deviation too (SCR_VONController.ComputeSpeakerLR)
+		if (CVON_StationaryRadioComponent.Cast(FindRadioComponent(speakerId)))
+			container.m_iTimeDeviation = VONContainer.m_iTimeDeviation;
 		container.m_iRadioId = VONContainer.m_iRadioId;
 		container.m_sFactionKey = VONContainer.m_sFactionKey;
 		container.m_iInterference = VONContainer.m_iInterference;
@@ -828,7 +884,7 @@ modded class SCR_PlayerController
 			return;
 
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
-		if (!radioComp)
+		if (!radioComp || !MayOperate(radioComp))
 			return;
 
 		radioComp.TogglePowerServer();
@@ -851,7 +907,11 @@ modded class SCR_PlayerController
 			return;
 
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
-		if (!radioComp)
+		if (!radioComp || !MayOperate(radioComp))
+			return;
+
+		//A station's channel in range: the set is shared, and a bad channel breaks its menu for the next holder
+		if (CVON_StationaryRadioComponent.Cast(radioComp) && (input < 1 || input > radioComp.m_aChannels.Count()))
 			return;
 
 		radioComp.UpdateChannelServer(input);
@@ -875,7 +935,7 @@ modded class SCR_PlayerController
 			return;
 
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
-		if (!radioComp)
+		if (!radioComp || !MayOperate(radioComp))
 			return;
 
 		radioComp.UpdateFrequncyServer(input);
@@ -899,7 +959,7 @@ modded class SCR_PlayerController
 			return;
 
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
-		if (!radioComp)
+		if (!radioComp || !MayOperate(radioComp))
 			return;
 
 		radioComp.UpdateTimeDeviationServer(input);
@@ -923,7 +983,7 @@ modded class SCR_PlayerController
 			return;
 
 		CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radioEntity.FindComponent(CVON_RadioComponent));
-		if (!radioComp)
+		if (!radioComp || !MayOperate(radioComp))
 			return;
 
 		radioComp.AddChannelServer();
@@ -975,5 +1035,16 @@ modded class SCR_PlayerController
 		if (!gamemode)
 			return;
 		gamemode.SetPlayerFrequencies(playerId, radioFreqs, factionKeys);
+
+		//Holding a station's handset and raising the headset: lowering took us off every frequency, so the
+		//station's calls already under way are joined again (the sender's own id, not the one in the message)
+		CVON_StationaryRadioComponent station = CVON_StationaryRadioComponent.Cast(gamemode.GetHeldHandset(GetControlledEntity()));
+		if (!station)
+			return;
+
+		array<string> freqs = {};
+		radioFreqs.Split("|", freqs, true);
+		if (freqs.Contains(station.m_sFrequency))
+			gamemode.JoinCallsUnderWay(GetPlayerId(), station);
 	}
 }
