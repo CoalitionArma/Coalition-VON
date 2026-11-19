@@ -817,6 +817,82 @@ modded class SCR_VONController
 		return 6.9 + 20 * Math.Log10(Math.Sqrt(a * a + 1) + a);
 	}
 
+	//Terrain factor for an entry, cached: recomputed every TERRAIN_INTERVAL or once an end moved far enough
+	//==========================================================================================================================================================================
+	float GetTerrainFactor(CVON_VONContainer container, vector receiver, vector sender)
+	{
+		if (!m_VONGameModeComponent)
+			return 1;
+		float strength = m_VONGameModeComponent.GetTerrainInterferenceStrength();
+		if (strength <= 0)
+			return 1;
+
+		bool moved = vector.DistanceSq(receiver, container.m_vTerrainTo) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK
+			|| vector.DistanceSq(sender, container.m_vTerrainFrom) > TERRAIN_MOVE_RECHECK * TERRAIN_MOVE_RECHECK;
+		if (m_fTime >= container.m_fNextTerrainTime || moved)
+		{
+			container.m_fTerrainFactor = ComputeTerrainFactor(sender, receiver, strength * GetLinkInterference(container));
+			container.m_fNextTerrainTime = m_fTime + TERRAIN_INTERVAL;
+			container.m_vTerrainFrom = sender;
+			container.m_vTerrainTo = receiver;
+		}
+		return container.m_fTerrainFactor;
+	}
+
+	//Half duplex (server setting), receiving side: while the player transmits on a radio, that radio can't
+	//receive. Radio traffic on the frequency they're transmitting on is then treated like traffic they have no
+	//radio for: only heard directly, if the sender is close enough.
+	//==========================================================================================================================================================================
+	protected bool IsBlockedByOwnTransmission(CVON_VONContainer container)
+	{
+		if (!m_bIsBroadcasting || !m_CurrentVONContainer || m_CurrentVONContainer.m_eVonType != CVON_EVONType.RADIO)
+			return false;
+		if (container.m_eVonType != CVON_EVONType.RADIO || container.m_sFrequency.IsEmpty())
+			return false;
+		if (container.m_sFrequency != m_CurrentVONContainer.m_sFrequency)
+			return false;
+		return IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HALF_DUPLEX);
+	}
+
+	//Half duplex, transmitting side (busy channel lockout): the radio won't key while it's receiving someone
+	//on its frequency, time deviation and key, as heard here (in range, past the hills). The player gets an
+	//error tone and has to press again once the channel is clear. Two players keying within the same moment
+	//can both get through, as neither has heard the other yet.
+	//==========================================================================================================================================================================
+	protected bool IsChannelBusy(CVON_RadioComponent radioComp)
+	{
+		if (!IsServerSettingOn(CVON_VONGameModeComponent.SETTING_HALF_DUPLEX))
+			return false;
+
+		foreach (int playerId, CVON_VONContainer container: m_PlayerController.m_aLocalEntries)
+		{
+			if (container.m_eVonType != CVON_EVONType.RADIO || container.m_bCutOff || container.m_bIsSpectator || container.m_bPickup)
+				continue;
+			if (container.m_sFrequency != radioComp.m_sFrequency || container.m_iTimeDeviation != radioComp.m_iTimeDeviation)
+				continue;
+			if (HasRadioKey(container.m_sFactionKey) && HasRadioKey(radioComp.m_sFactionKey) && container.m_sFactionKey != radioComp.m_sFactionKey)
+				continue;
+			if (RadioSignalAtReceiver(container) > 0)
+				return true;
+		}
+		return false;
+	}
+
+	//Same rule as the plugin: an empty key or "0" means no key
+	protected bool HasRadioKey(string key)
+	{
+		return !key.IsEmpty() && key != "0";
+	}
+
+	//==========================================================================================================================================================================
+	protected bool RefuseIfChannelBusy(CVON_RadioComponent radioComp)
+	{
+		if (!IsChannelBusy(radioComp))
+			return false;
+		SCR_UISoundEntity.SoundEvent(SCR_SoundEvent.SOUND_RADIO_CHANGEFREQUENCY_ERROR);
+		return true;
+	}
+
 	//The signal a radio transmission arrives with at the player's radio (LinkQuality: -1 = out of reach in
 	//the realistic model)
 	//==========================================================================================================================================================================
