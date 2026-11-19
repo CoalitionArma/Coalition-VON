@@ -1,0 +1,52 @@
+GenericEntity : "{03B44EA7652D0D17}Prefabs/Props/Military/Radios/RadioStation_R123M_01.et" {
+ ID "2EB2DCD20C9AD800"
+ components {
+  CVON_StationaryRadioComponent "{1345151FC405F300}" {
+   m_sRadioName "R-123M"
+   m_eRadioType LONG
+   m_iRadioRange 20000
+   m_fInterference 0.25
+   m_sRadioIcon "{75636C3CC268DA62}UI/layouts/Radios/R168/data/R168Icon.edds"
+   m_sDialOn "{BA07FE76D57B8991}UI/layouts/Radios/R168/data/R168DialOn.edds"
+   m_sDialOff "{15519282637FD347}UI/layouts/Radios/R168/data/R168DialOff.edds"
+   m_eRadioMenu R168
+   m_iSpeakerRange 15
+  }
+  ActionsManagerComponent "{2EF3A846A19E7000}" {
+   ActionContexts {
+    UserActionContext "{2F2CFC7648B57600}" {
+     ContextName "CVON_Station"
+     Position PointInfo "{2186D123B19D4600}" {
+      Offset 0 0.12 0
+     }
+     Radius 4
+    }
+   }
+   additionalActions {
+    CVON_GrabHandMic "{462A0E5257E23C00}" {
+     ParentContextList {
+      "CVON_Station"
+     }
+     UIInfo UIInfo "{21321B7AA33DE200}" {
+      Name "Pick Up Handset"
+     }
+     Duration 0.5
+    }
+    CVON_StationSpeakerAction "{1D53FB05DDDEB200}" {
+     ParentContextList {
+      "CVON_Station"
+     }
+     UIInfo UIInfo "{57C43B8CFD9E3800}" {
+      Name "Turn Speaker On"
+     }
+     Duration 0.5
+    }
+   }
+  }
+  RplComponent "{5624A88DC2D9928D}" {
+   Enabled 1
+   SpatialRelevancy 0
+   Streamable Disabled
+  }
+ }
+}
