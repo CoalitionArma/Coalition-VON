@@ -1,0 +1,52 @@
+GenericEntity : "{4417ED07902CE47E}Prefabs/Props/Military/Radios/RadioStation_ANPRC77_01.et" {
+ ID "29372E3A03B4AE00"
+ components {
+  CVON_StationaryRadioComponent "{694A4CD3F7CB8400}" {
+   m_sRadioName "AN/PRC-77"
+   m_eRadioType LONG
+   m_iRadioRange 20000
+   m_fInterference 0.25
+   m_sRadioIcon "{FFB5DD736483D225}UI/layouts/Radios/ANPRC117/data/ANPRC117Icon.edds"
+   m_sDialOn "{52C708D6FBA2E5CA}UI/layouts/Radios/ANPRC117/data/ANPRC117DialOn.edds"
+   m_sDialOff "{A744E80C100B0FC5}UI/layouts/Radios/ANPRC117/data/ANPRC117DialOff.edds"
+   m_eRadioMenu ANPRC117
+   m_iSpeakerRange 15
+  }
+  ActionsManagerComponent "{5242BB76CDBC2800}" {
+   ActionContexts {
+    UserActionContext "{3A22891BC06DC000}" {
+     ContextName "CVON_Station"
+     Position PointInfo "{003A0A21362EEF22}" {
+      Offset 0 0.1 0.05
+     }
+     Radius 4
+    }
+   }
+   additionalActions {
+    CVON_GrabHandMic "{2789ACE3A4B65800}" {
+     ParentContextList {
+      "CVON_Station"
+     }
+     UIInfo UIInfo "{4C6AA3DD45FB3800}" {
+      Name "Pick Up Handset"
+     }
+     Duration 0.5
+    }
+    CVON_StationSpeakerAction "{59648BE165B25400}" {
+     ParentContextList {
+      "CVON_Station"
+     }
+     UIInfo UIInfo "{1526FE1B28DB3C00}" {
+      Name "Turn Speaker On"
+     }
+     Duration 0.5
+    }
+   }
+  }
+  RplComponent "{5624A88DC2D9928D}" {
+   Enabled 1
+   SpatialRelevancy 0
+   Streamable Disabled
+  }
+ }
+}

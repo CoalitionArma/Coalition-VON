@@ -372,7 +372,7 @@ class CVON_RadioComponent: ScriptComponent
 
 		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
 		if (gamemode)
-			gamemode.SetHandsetHeld(this, true);
+			gamemode.SetHandsetHeld(this, true, holder);
 		BumpAndNotifyHandset();
 	}
 
@@ -381,11 +381,24 @@ class CVON_RadioComponent: ScriptComponent
 		if (m_HandMicHolder == RplId.Invalid())
 			return;
 
+		//Read before it's cleared: the gamemode ends what the holder had on this radio
+		IEntity holder = GetHandsetHolder();
 		m_HandMicHolder = RplId.Invalid();
 		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
 		if (gamemode)
-			gamemode.SetHandsetHeld(this, false);
+			gamemode.SetHandsetHeld(this, false, holder);
 		BumpAndNotifyHandset();
+	}
+
+	//Would this radio receive the transmission: its frequency, time deviation and, with encryption on, its key
+	//==========================================================================================================================================================================
+	bool Receives(CVON_VONContainer VONContainer)
+	{
+		if (!VONContainer || VONContainer.m_sFrequency != m_sFrequency || VONContainer.m_iTimeDeviation != m_iTimeDeviation)
+			return false;
+
+		SCR_BaseGameMode gamemode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
+		return !gamemode || !gamemode.IsEncryptionEnabled() || VONContainer.m_sFactionKey == m_sFactionKey;
 	}
 
 	protected void BumpAndNotifyHandset()
@@ -570,7 +583,10 @@ class CVON_RadioComponent: ScriptComponent
 			foreach (CVON_GroupFrequencyContainer groupContainer: gamemode.m_FreqConfig.m_aPresetGroupFrequencyContainers)
 				AddGroupFrequencies(groupContainer, SRFrequencies, LRFrequencies);
 
-			SCR_Faction faction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(factionKey));
+			//A station in a world with no faction manager gets the preset frequencies only
+			SCR_Faction faction;
+			if (!CVON_StationaryRadioComponent.Cast(this) || GetGame().GetFactionManager())
+				faction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(factionKey));
 			if (faction && faction.GetCallsignInfo())
 			{
 				foreach (CVON_GroupFrequencyContainer overrideContainer: faction.GetCallsignInfo().m_aGroupFrequencyOverrides)
@@ -601,6 +617,107 @@ class CVON_RadioComponent: ScriptComponent
 	//(CVON_VehicleRadioComponent).
 	protected void OnChannelsInitialized()
 	{
+	}
+
+	//Can this radio be used at all. Vehicle radios answer from their prefab (CVON_VehicleRadioComponent).
+	//==========================================================================================================================================================================
+	bool HasRadio()
+	{
+		return true;
+	}
+
+	//Authority: "key fill" from a user. If the radio isn't on their encryption it takes their key and
+	//channels, copied from their own radio so it matches however the mission set their radios up (frequency
+	//config, the Lobby's faction channels); with no radio of their own, from their faction. Used by a
+	//vehicle's crew (VONVehicleKeyFill keybind, or automatically when the radio has no key at all) and by
+	//the first user of a station (CVON_StationaryRadioComponent). Until then the radio keeps its key and
+	//goes on playing that traffic. A vehicle's prefab faction often isn't the players' (vanilla "US"
+	//vehicles, "BLUFOR" players).
+	//==========================================================================================================================================================================
+	void KeyFillFromCrew(IEntity character)
+	{
+		if (!HasRadio() || !character)
+			return;
+
+		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(character.FindComponent(FactionAffiliationComponent));
+		if (!factionComp)
+			return;
+
+		string crewKey = factionComp.GetAffiliatedFactionKey();
+		if (crewKey == "" || SharesKey(crewKey))
+			return;
+
+		m_aChannels.Clear();
+		CVON_RadioComponent crewRadio = FindCrewRadio(character);
+		if (crewRadio && !crewRadio.m_aChannels.IsEmpty())
+		{
+			m_sFactionKey = crewKey;
+			m_sOriginalFactionKey = crewKey;
+			m_aChannels.InsertAll(crewRadio.m_aChannels);
+			SelectStartingChannel(crewRadio);
+		}
+		else
+		{
+			InitializeForFaction(crewKey);
+			SelectStartingChannel(null);
+		}
+
+		BumpAndNotify();
+	}
+
+	//Authority, after a key fill: start on the channel, frequency and time deviation of the user's radio the
+	//channels were copied from. Null when there was none to copy: InitializeForFaction built the channels
+	//and OnChannelsInitialized picked where the radio starts. Vehicle radios pick their own start.
+	//==========================================================================================================================================================================
+	protected void SelectStartingChannel(CVON_RadioComponent userRadio = null)
+	{
+		if (!userRadio)
+			return;
+
+		m_iCurrentChannel = userRadio.m_iCurrentChannel;
+		m_sFrequency = userRadio.m_sFrequency;
+		m_iTimeDeviation = userRadio.m_iTimeDeviation;
+	}
+
+	//Already on this key: the faction's own, or a shared-frequency key listing it ("US|BLUFOR|")
+	bool SharesKey(string factionKey)
+	{
+		if (m_sFactionKey == factionKey)
+			return true;
+
+		array<string> sharedKeys = {};
+		m_sFactionKey.Split("|", sharedKeys, true);
+		return sharedKeys.Contains(factionKey);
+	}
+
+	//The user's own radio to copy channels from: a long-range one if they have it
+	protected CVON_RadioComponent FindCrewRadio(IEntity character)
+	{
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (!gamemode)
+			return null;
+
+		array<IEntity> radios = gamemode.GetRadioEntities(character);
+		if (!radios)
+			return null;
+
+		CVON_RadioComponent firstRadio;
+		foreach (IEntity radio: radios)
+		{
+			if (radio == GetOwner())
+				continue;
+
+			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
+			if (!radioComp || CVON_VehicleRadioComponent.Cast(radioComp))
+				continue;
+
+			if (radioComp.m_eRadioType == CVON_ERadioType.LONG)
+				return radioComp;
+
+			if (!firstRadio)
+				firstRadio = radioComp;
+		}
+		return firstRadio;
 	}
 
 	//Every long-range frequency the frequency config gives a faction: the preset groups' and the faction's

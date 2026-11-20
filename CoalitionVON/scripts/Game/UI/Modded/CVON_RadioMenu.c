@@ -163,6 +163,13 @@ class CVON_RadioMenu: MenuBase
 				PowerOff();
 		}
 			
+		//A station's set is only for whoever holds its handset: closes when they put it down or lose it
+		if (CVON_StationaryRadioComponent.Cast(m_RadioComponent) && !m_RadioComponent.IsHandsetHeldBy(SCR_PlayerController.GetLocalControlledEntity()))
+		{
+			Close();
+			return;
+		}
+
 		//Update the time if its the time menu
 		if (m_ERadioMenu == CVON_ERadioMenu.TIME)
 		{

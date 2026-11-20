@@ -175,3 +175,20 @@ A manpack is a long-range CVON radio carried by someone wearing a radio backpack
 - **Handheld speakers** (server setting `m_bHandheldSpeakers`): "Toggle Radio Speaker" (Left Ctrl + End, when not in a vehicle crew seat) puts the player's active radio on speaker, handheld or manpack. Its traffic then plays in 3D from the player for anyone nearby who doesn't have the frequency themselves; the player keeps hearing it in their headset. A handheld's speaker fades out over `CVON_RadioComponent.HANDHELD_SPEAKER_RANGE` (8 m), or the radio's `m_iSpeakerRange` if that's smaller. With the setting off, the keybind only reaches manpacks, as before.
 - **Dropped radios** (server setting `m_bDroppedRadiosTransmit`): a switched-on radio lying on the ground plays its traffic out loud from where it lies, up to 8 m, whether or not its speaker was on. Turn it off before dropping it to keep it quiet. Only radios someone has carried count (they have a key fill), so spares that were never handed out stay silent, and a radio inside a backpack, crate or vehicle doesn't play.
 - **How:** every radio registers with the gamemode when it gets its key fill (`InitializeForFaction`). `BroadcastToSpeakers` checks each one's frequency, then `HasActiveSpeaker` (`IsDropped`: no parent entity and a key fill), and sends nearby players the usual speaker entry. Listeners need no new plugin.
+
+# Station radios
+
+A station is a radio set placed in the world, like a field radio on a desk at a command post. Players pick up its handset to talk on its net, and its speaker plays the net out loud for the people around it. The mod ships three, in `Prefabs/Props/Military/Radios/`:
+
+| Prefab | Set | Radio menu |
+|---|---|---|
+| `CVON_RadioStation_ANPRC77.et` | AN/PRC-77 (Vietnam) | PRC-117 |
+| `CVON_RadioStation_ANGRC160.et` | AN/GRC-160 (US, 1980s to modern) | PRC-117 |
+| `CVON_RadioStation_R123M.et` | R-123M (Soviet, 1970s to modern) | R-168 |
+
+Drag one into a world with CVON's gamemode and it works.
+
+- **Key:** a set starts unkeyed. The first military player to use it fills it from their own radio, as the crew fill a vehicle radio, and it keeps that key. Set `m_sFactionKeyOverride` on the placed set to key it from the start.
+- **Handset:** "Pick Up Handset" within 2 m of the set. It works like a manpack's handset: the set goes on your radio keys after your own radios, and only the holder can talk on it or tune it. The server takes it back past 4 m from the set, or if you die or leave.
+- **Speaker:** "Turn Speaker On" / "Turn Speaker Off" for anyone within 2.5 m of the set, or the holder's "Toggle Radio Speaker" keybind. It plays from the set out to 15 m (`m_iSpeakerRange`), like a manpack's speaker. It starts off unless `m_bSpeakerOnByDefault` is set.
+- **Settings:** a station is a long-range set (20 km, the PRC-117's terrain loss) and follows the server settings like any radio. `m_bHandheldSpeakers` and `m_bDroppedRadiosTransmit` don't affect it.

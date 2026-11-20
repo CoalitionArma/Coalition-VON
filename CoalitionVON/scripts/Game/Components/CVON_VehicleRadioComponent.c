@@ -91,7 +91,7 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		return m_iMilitaryState == 1;
 	}
 
-	bool HasRadio()
+	override bool HasRadio()
 	{
 		return m_bHasRadio && IsEquipped();
 	}
@@ -277,43 +277,6 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		InitializeForFaction(factionKey);
 	}
 
-	//Authority: "key fill", done by a crew member with the VONVehicleKeyFill keybind (or automatically when
-	//the radio has no key at all). If the radio isn't on their encryption it takes their key and channels,
-	//copied from their own radio so it matches however the mission set their radios up (frequency config,
-	//the Lobby's faction channels); with no radio of their own, from their faction. Until then it keeps its
-	//key and goes on playing that traffic. A vehicle's prefab faction often isn't the players' (vanilla "US"
-	//vehicles, "BLUFOR" players).
-	//==========================================================================================================================================================================
-	void KeyFillFromCrew(IEntity character)
-	{
-		if (!HasRadio() || !character)
-			return;
-
-		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(character.FindComponent(FactionAffiliationComponent));
-		if (!factionComp)
-			return;
-
-		string crewKey = factionComp.GetAffiliatedFactionKey();
-		if (crewKey == "" || SharesKey(crewKey))
-			return;
-
-		m_aChannels.Clear();
-		CVON_RadioComponent crewRadio = FindCrewRadio(character);
-		if (crewRadio && !crewRadio.m_aChannels.IsEmpty())
-		{
-			m_sFactionKey = crewKey;
-			m_sOriginalFactionKey = crewKey;
-			m_aChannels.InsertAll(crewRadio.m_aChannels);
-		}
-		else
-		{
-			InitializeForFaction(crewKey);
-		}
-
-		SelectStartingChannel();
-		BumpAndNotify();
-	}
-
 	//Channels were (re)built for the radio's faction
 	//==========================================================================================================================================================================
 	override protected void OnChannelsInitialized()
@@ -324,7 +287,7 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 	//Authority: tune to the starting frequency (GetStartingFrequency), adding it to the channel list if the
 	//list doesn't have it, else channel 1. Sets the channel and the frequency together so they always agree.
 	//==========================================================================================================================================================================
-	protected void SelectStartingChannel()
+	override protected void SelectStartingChannel(CVON_RadioComponent userRadio = null)
 	{
 		if (m_aChannels.IsEmpty())
 			m_aChannels.Insert("55500");
@@ -379,47 +342,6 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		}
 
 		return "";
-	}
-
-	//Already on this key: the faction's own, or a shared-frequency key listing it ("US|BLUFOR|")
-	bool SharesKey(string factionKey)
-	{
-		if (m_sFactionKey == factionKey)
-			return true;
-
-		array<string> sharedKeys = {};
-		m_sFactionKey.Split("|", sharedKeys, true);
-		return sharedKeys.Contains(factionKey);
-	}
-
-	//The crew member's own radio to copy channels from: a long-range one if they have it
-	protected CVON_RadioComponent FindCrewRadio(IEntity character)
-	{
-		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
-		if (!gamemode)
-			return null;
-
-		array<IEntity> radios = gamemode.GetRadioEntities(character);
-		if (!radios)
-			return null;
-
-		CVON_RadioComponent firstRadio;
-		foreach (IEntity radio: radios)
-		{
-			if (radio == GetOwner())
-				continue;
-
-			CVON_RadioComponent radioComp = CVON_RadioComponent.Cast(radio.FindComponent(CVON_RadioComponent));
-			if (!radioComp || CVON_VehicleRadioComponent.Cast(radioComp))
-				continue;
-
-			if (radioComp.m_eRadioType == CVON_ERadioType.LONG)
-				return radioComp;
-
-			if (!firstRadio)
-				firstRadio = radioComp;
-		}
-		return firstRadio;
 	}
 
 }

@@ -67,6 +67,7 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 	// Server, reused by BroadcastToSpeakers: the nearest speaker each player hears a transmission through
 	static const float SPEAKER_SEND_MARGIN = 10; // m past the speaker range, so people walking up hear it (the client fades it in)
+	static const float TAKE_OVER_MARGIN = 2; // m: a station takes a listener from a non-station speaker only this far inside its range and this much nearer, so nobody swaps every tick
 	ref array<int> m_aSpeakerPlayerIds = {};
 	ref map<int, CVON_RadioComponent> m_mNearestSpeaker = new map<int, CVON_RadioComponent>();
 	ref map<int, float> m_mNearestSpeakerDistSq = new map<int, float>();
@@ -231,6 +232,10 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		super.OnPlayerDisconnected(playerId, cause, timeout);
 		if (Replication.IsServer())
 		{
+			//Talking on a station when they left: the receivers hear it cut off, as when the holder is killed
+			//(the station only notices the holder is gone on its next handset check)
+			if (IsServerSettingOn(SETTING_CUT_OFF) && GetCallStation(playerId))
+				CutOffLocalVONBroadcasts(playerId);
 			RemoveLocalVONBroadcasts(playerId);
 			RemoveFromFrequencyIndex(playerId);
 			StopRadioListeningFor(playerId);
@@ -376,6 +381,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		if (!sender)
 			return;
 		vector senderOrigin = sender.GetOrigin();
+		//The call's radio, for a station's handset and speaker (the codec doesn't carry it)
+		m_mCallRadios.Set(playerIdToAdd, radioId);
 		m_mActiveBroadcasts.Set(playerIdToAdd, VONContainer);
 		m_mActiveBroadcastRange.Set(playerIdToAdd, maxDist);
 
@@ -441,7 +448,11 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		}
 
 		if (!m_aSpeakerRadios.IsEmpty())
+		{
 			BroadcastToSpeakers(VONContainer, playerIdToAdd, radioId, senderOrigin, maxDist, receivers, gamemode.IsEncryptionEnabled());
+			//Only while a station's speaker plays: people walking up to it join the call (SpeakerTick)
+			StartSpeakerTicking();
+		}
 
 		if (IsServerSettingOn(SETTING_VOICE_PICKUP))
 		{
@@ -563,16 +574,27 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	//dropped radio) on the transmission's frequency hear it from that radio, unless they already have it on
 	//a radio of their own. Each player gets their nearest speaker (one voice per talker); a listener also
 	//near the sender hears whichever of the speaker and the sender's own voice is louder for them (worked
-	//out on their client, see SCR_VONController.WriteJSON).
+	//out on their client, see SCR_VONController.WriteJSON). stationsOnly: only station speakers (SpeakerTick).
+	//onlyPlayerId: only that player (a station's handset put down, ReleaseStationHandset; a station speaker lost,
+	//DropLostStationSpeakerListeners). takeOverFrom: the speaker that player is silent at (TakeOverSilentListeners) or, if not a station,
+	//still hears (a station takes them from it TAKE_OVER_MARGIN inside its range and that much nearer); another one takes them only inside its own range.
 	//==========================================================================================================================================================================
-	protected void BroadcastToSpeakers(CVON_VONContainer VONContainer, int senderId, RplId transmittingRadio, vector senderOrigin, float maxDist, array<int> receivers, bool encryption)
+	protected void BroadcastToSpeakers(CVON_VONContainer VONContainer, int senderId, RplId transmittingRadio, vector senderOrigin, float maxDist, array<int> receivers, bool encryption, bool stationsOnly = false, int onlyPlayerId = 0, CVON_RadioComponent takeOverFrom = null)
 	{
 		PlayerManager pm = GetGame().GetPlayerManager();
 
 		m_aSpeakerPlayerIds.Clear();
-		pm.GetPlayers(m_aSpeakerPlayerIds);
+		if (onlyPlayerId > 0)
+			m_aSpeakerPlayerIds.Insert(onlyPlayerId);
+		else
+			pm.GetPlayers(m_aSpeakerPlayerIds);
 		m_mNearestSpeaker.Clear();
 		m_mNearestSpeakerDistSq.Clear();
+
+		//A station taking a listener from a non-station speaker also needs the margins unless that speaker is silent for them
+		IEntity oldEntity;
+		if (takeOverFrom && !CVON_StationaryRadioComponent.Cast(takeOverFrom))
+			oldEntity = takeOverFrom.GetSpeakerEntity();
 
 		foreach (CVON_RadioComponent speaker: m_aSpeakerRadios)
 		{
@@ -583,7 +605,10 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			if (encryption && speaker.m_sFactionKey != VONContainer.m_sFactionKey)
 				continue;
 
-			if (!speaker.HasActiveSpeaker())
+			if (stationsOnly && !CVON_StationaryRadioComponent.Cast(speaker))
+				continue;
+
+			if (!speaker.HasActiveSpeaker() || speaker == takeOverFrom)
 				continue;
 
 			// A radio doesn't play its own transmission
@@ -599,7 +624,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 			if (maxDist > 0 && vector.DistanceSq(speakerOrigin, senderOrigin) > maxDist * maxDist)
 				continue;
 
-			float reach = speaker.GetSpeakerRange() + SPEAKER_SEND_MARGIN;
+			float reach = speaker.GetSpeakerRange();
+			if (!takeOverFrom)
+				reach += SPEAKER_SEND_MARGIN;
 			float reachSq = reach * reach;
 			foreach (int playerId: m_aSpeakerPlayerIds)
 			{
@@ -614,6 +641,14 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 				float distSq = vector.DistanceSq(origin, speakerOrigin);
 				if (distSq > reachSq)
 					continue;
+
+				if (oldEntity)
+				{
+					float newDist = Math.Sqrt(distSq);
+					float oldDist = vector.Distance(origin, oldEntity.GetOrigin());
+					if (oldDist <= takeOverFrom.GetSpeakerRange() && (newDist > reach - TAKE_OVER_MARGIN || newDist > oldDist - TAKE_OVER_MARGIN))
+						continue;
+				}
 
 				float nearestSq;
 				if (m_mNearestSpeakerDistSq.Find(playerId, nearestSq) && nearestSq <= distSq)
@@ -632,6 +667,253 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 
 			receiverController.AddLocalSpeakerBroadcast(VONContainer, senderId, senderOrigin, maxDist, speaker.GetRplId(), speaker.GetSpeakerRange());
 			receivers.Insert(playerId);
+
+			//Kept for SpeakerTick; a non-station speaker's only once a station exists, for its take-over
+			map<int, ref map<int, CVON_RadioComponent>> kept = m_mOtherSpeakerListeners;
+			if (CVON_StationaryRadioComponent.Cast(speaker))
+				kept = m_mStationSpeakerListeners;
+			else if (!m_bStationSpeakerRegistered)
+				continue;
+
+			map<int, CVON_RadioComponent> keptListeners = kept.Get(senderId);
+			if (!keptListeners)
+			{
+				keptListeners = new map<int, CVON_RadioComponent>();
+				kept.Set(senderId, keptListeners);
+			}
+			keptListeners.Set(playerId, speaker);
+		}
+	}
+
+	//Station speakers join calls already under way: a speaker switched on mid-call, or someone walking up to
+	//one, hears the rest of it, and a listener moves to another station speaker on the net when theirs goes
+	//off, is retuned or is left behind. BroadcastToSpeakers otherwise runs only when a transmission starts.
+	//Only station speakers take part. The checks run while a call is under way and a station speaker plays,
+	//or while someone still hears a call through a station speaker that went off, was retuned or was deleted
+	//(they are handed on as above, or lose the call); then they stop until a station speaker plays again.
+	//==========================================================================================================================================================================
+	static const int SPEAKER_TICK_MS = 500;	// ms between station speaker checks while a call is under way
+	protected bool m_bSpeakerTicking;
+	protected bool m_bStationSpeakerRegistered;	// a station is in m_aSpeakerRadios: until then a server has no station speaker to look for
+	// Per sender: who hears the call through which station speaker (BroadcastToSpeakers)
+	protected ref map<int, ref map<int, CVON_RadioComponent>> m_mStationSpeakerListeners = new map<int, ref map<int, CVON_RadioComponent>>();
+	// Per sender: who hears the call through which other speaker, kept only once a station exists (BroadcastToSpeakers)
+	protected ref map<int, ref map<int, CVON_RadioComponent>> m_mOtherSpeakerListeners = new map<int, ref map<int, CVON_RadioComponent>>();
+	// Per sender: the radio the call is on (AddLocalVONBroadcasts)
+	protected ref map<int, RplId> m_mCallRadios = new map<int, RplId>();
+
+	//The radio the sender is talking on, else invalid
+	//==========================================================================================================================================================================
+	protected RplId GetCallRadio(int senderId)
+	{
+		RplId radio;
+		if (!m_mCallRadios.Find(senderId, radio))
+			return RplId.Invalid();
+		return radio;
+	}
+
+	//The station the sender is talking on, else null
+	//==========================================================================================================================================================================
+	protected CVON_StationaryRadioComponent GetCallStation(int senderId)
+	{
+		RplId radioId = GetCallRadio(senderId);
+		if (radioId == RplId.Invalid())
+			return null;
+
+		RplComponent rpl = RplComponent.Cast(Replication.FindItem(radioId));
+		if (!rpl || !rpl.GetEntity())
+			return null;
+		return CVON_StationaryRadioComponent.Cast(rpl.GetEntity().FindComponent(CVON_RadioComponent));
+	}
+
+	//Server: starts the station speaker checks unless they run already or no station's speaker plays
+	//==========================================================================================================================================================================
+	void StartSpeakerTicking()
+	{
+		if (m_bSpeakerTicking || !HasStationSpeaker())
+			return;
+		m_bSpeakerTicking = true;
+		GetGame().GetCallqueue().CallLater(SpeakerTick, SPEAKER_TICK_MS);
+	}
+
+	//A station's speaker is playing
+	//==========================================================================================================================================================================
+	protected bool HasStationSpeaker()
+	{
+		if (!m_bStationSpeakerRegistered)
+			return false;
+
+		foreach (CVON_RadioComponent speaker: m_aSpeakerRadios)
+		{
+			if (CVON_StationaryRadioComponent.Cast(speaker) && speaker.HasActiveSpeaker())
+				return true;
+		}
+		return false;
+	}
+
+	//Runs while transmissions are under way and a station's speaker plays or a station speaker listener is
+	//left to hand on; stops by itself otherwise
+	//==========================================================================================================================================================================
+	protected void SpeakerTick()
+	{
+		SCR_BaseGameMode gamemode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
+		bool stationPlays = HasStationSpeaker();
+		if (!gamemode || m_mBroadcastReceivers.IsEmpty() || (!stationPlays && m_mStationSpeakerListeners.IsEmpty()))
+		{
+			m_bSpeakerTicking = false;
+			return;
+		}
+		GetGame().GetCallqueue().CallLater(SpeakerTick, SPEAKER_TICK_MS);
+
+		PlayerManager pm = GetGame().GetPlayerManager();
+		foreach (int senderId, array<int> receivers: m_mBroadcastReceivers)
+		{
+			CVON_VONContainer container = m_mActiveBroadcasts.Get(senderId);
+			IEntity sender = pm.GetPlayerControlledEntity(senderId);
+			if (!receivers || !container || !sender)
+				continue;
+
+			vector senderOrigin = sender.GetOrigin();
+			float maxDist = m_mActiveBroadcastRange.Get(senderId);
+			DropLostStationSpeakerListeners(senderId, container, receivers, senderOrigin, maxDist, gamemode.IsEncryptionEnabled());
+			if (!stationPlays)
+				continue;
+
+			TakeOverSilentListeners(senderId, container, receivers, senderOrigin, maxDist, gamemode.IsEncryptionEnabled());
+			BroadcastToSpeakers(container, senderId, GetCallRadio(senderId), senderOrigin, maxDist, receivers, gamemode.IsEncryptionEnabled(), true);
+		}
+	}
+
+	//Hand-off: a listener whose station speaker was switched off or retuned, or who walked out of its range,
+	//goes on hearing the call through the player they listen to if that player hears it, else through the
+	//nearest other speaker playing it, else not at all. Listeners of any other speaker aren't in
+	//m_mStationSpeakerListeners.
+	//==========================================================================================================================================================================
+	protected void DropLostStationSpeakerListeners(int senderId, CVON_VONContainer container, array<int> receivers, vector senderOrigin, float maxDist, bool encryption)
+	{
+		map<int, CVON_RadioComponent> listeners = m_mStationSpeakerListeners.Get(senderId);
+		if (!listeners)
+			return;
+
+		PlayerManager pm = GetGame().GetPlayerManager();
+		array<int> lost = {};
+		foreach (int playerId, CVON_RadioComponent speaker: listeners)
+		{
+			IEntity player = pm.GetPlayerControlledEntity(playerId);
+			IEntity speakerEntity;
+			if (speaker)
+				speakerEntity = speaker.GetSpeakerEntity();
+			if (!player || !speakerEntity || !speaker.HasActiveSpeaker() || !speaker.Receives(container)
+				|| vector.Distance(player.GetOrigin(), speakerEntity.GetOrigin()) > speaker.GetSpeakerRange() + SPEAKER_SEND_MARGIN)
+				lost.Insert(playerId);
+		}
+
+		//Each first gets the nearest other speaker playing the call, if any. A speaker entry replaces a speaker
+		//entry, so the old one goes only when nothing plays it to them.
+		array<int> dropped = {};
+		foreach (int playerId: lost)
+		{
+			listeners.Remove(playerId);
+			if (!receivers.Contains(playerId))
+				continue;
+
+			dropped.Insert(playerId);
+			receivers.RemoveItem(playerId);
+			BroadcastToSpeakers(container, senderId, GetCallRadio(senderId), senderOrigin, maxDist, receivers, encryption, false, playerId);
+		}
+
+		//Then, once all of them are settled, a radio entry, as SetRadioListenTarget gives it, while the player they
+		//listen to hears it. Repeated while it keeps someone new, as that player may have been one of them.
+		array<int> onTarget = {};
+		bool keptNew = true;
+		while (keptNew)
+		{
+			keptNew = false;
+			foreach (int playerId: dropped)
+			{
+				int listenTarget;
+				m_mRadioListenTarget.Find(playerId, listenTarget);
+				if (listenTarget <= 0 || onTarget.Contains(playerId) || !receivers.Contains(listenTarget))
+					continue;
+
+				onTarget.Insert(playerId);
+				keptNew = true;
+				listeners.Remove(playerId);
+				map<int, CVON_RadioComponent> otherListeners = m_mOtherSpeakerListeners.Get(senderId);
+				if (otherListeners)
+					otherListeners.Remove(playerId);
+				if (!receivers.Contains(playerId))
+					receivers.Insert(playerId);
+				SCR_PlayerController targetListener = SCR_PlayerController.Cast(pm.GetPlayerController(playerId));
+				if (targetListener)
+					targetListener.AddLocalVONBroadcast(container, senderId, senderOrigin, maxDist);
+			}
+		}
+
+		foreach (int playerId: dropped)
+		{
+			if (receivers.Contains(playerId))
+				continue;
+
+			SCR_PlayerController playerController = SCR_PlayerController.Cast(pm.GetPlayerController(playerId));
+			if (playerController)
+				playerController.RemoveLocalVONBroadcast(senderId);
+		}
+
+		//None left for this call: the checks can stop once no station speaker plays
+		if (listeners.IsEmpty())
+			m_mStationSpeakerListeners.Remove(senderId);
+	}
+
+	//A listener past their speaker's range hears nothing from it, so a station hands them on or takes them
+	//==========================================================================================================================================================================
+	protected void TakeOverSilentListeners(int senderId, CVON_VONContainer container, array<int> receivers, vector senderOrigin, float maxDist, bool encryption)
+	{
+		map<int, CVON_RadioComponent> stationListeners = m_mStationSpeakerListeners.Get(senderId);
+		TakeOverFrom(stationListeners, false, senderId, container, receivers, senderOrigin, maxDist, encryption);
+		if (stationListeners && stationListeners.IsEmpty())
+			m_mStationSpeakerListeners.Remove(senderId);
+
+		TakeOverFrom(m_mOtherSpeakerListeners.Get(senderId), true, senderId, container, receivers, senderOrigin, maxDist, encryption);
+	}
+
+	//==========================================================================================================================================================================
+	protected void TakeOverFrom(map<int, CVON_RadioComponent> listeners, bool stationsOnly, int senderId, CVON_VONContainer container, array<int> receivers, vector senderOrigin, float maxDist, bool encryption)
+	{
+		if (!listeners)
+			return;
+
+		PlayerManager pm = GetGame().GetPlayerManager();
+		array<int> silent = {};
+		array<int> gone = {};
+		foreach (int playerId, CVON_RadioComponent speaker: listeners)
+		{
+			IEntity player = pm.GetPlayerControlledEntity(playerId);
+			if (!player)
+				gone.Insert(playerId);
+			IEntity speakerEntity;
+			if (speaker)
+				speakerEntity = speaker.GetSpeakerEntity();
+			if (player && speakerEntity && receivers.Contains(playerId)
+				&& (stationsOnly || vector.Distance(player.GetOrigin(), speakerEntity.GetOrigin()) > speaker.GetSpeakerRange()))
+				silent.Insert(playerId);
+		}
+
+		foreach (int playerId: gone)
+			listeners.Remove(playerId);
+
+		//A speaker entry replaces a speaker entry, so nothing is sent unless another speaker takes them
+		foreach (int playerId: silent)
+		{
+			CVON_RadioComponent old = listeners.Get(playerId);
+			listeners.Remove(playerId);
+			receivers.RemoveItem(playerId);
+			BroadcastToSpeakers(container, senderId, GetCallRadio(senderId), senderOrigin, maxDist, receivers, encryption, stationsOnly, playerId, old);
+			if (receivers.Contains(playerId))
+				continue;
+
+			receivers.Insert(playerId);
+			listeners.Set(playerId, old);
 		}
 	}
 
@@ -639,6 +921,8 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 	{
 		if (!m_aSpeakerRadios.Contains(radio))
 			m_aSpeakerRadios.Insert(radio);
+		if (CVON_StationaryRadioComponent.Cast(radio))
+			m_bStationSpeakerRegistered = true;
 	}
 
 	void UnregisterSpeakerRadio(CVON_RadioComponent radio)
@@ -657,15 +941,126 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		m_aVehicleComms.RemoveItem(comms);
 	}
 
-	void SetHandsetHeld(CVON_RadioComponent radio, bool held)
+	//Server: someone picked up or let go of a radio's handset (holder: who). A station's holder joins the calls
+	//already under way on it; letting go ends their own call on it and takes back what only the station gave them.
+	//==========================================================================================================================================================================
+	void SetHandsetHeld(CVON_RadioComponent radio, bool held, IEntity holder = null)
 	{
+		CVON_StationaryRadioComponent station = CVON_StationaryRadioComponent.Cast(radio);
 		if (!held)
 		{
 			m_aHeldHandsets.RemoveItem(radio);
+			if (station && holder)
+				ReleaseStationHandset(station, holder);
 			return;
 		}
 		if (!m_aHeldHandsets.Contains(radio))
 			m_aHeldHandsets.Insert(radio);
+		if (station && holder)
+			JoinCallsUnderWay(GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(holder), station);
+	}
+
+	//The holder let go of a station's handset. Their own call on it ends first, before the release reaches any
+	//client: cut off when they were killed or are gone (so the receivers still get the burst, not a clean
+	//release that got there first), a normal end otherwise. Then the calls they heard only on the station stop,
+	//or carry on through a speaker they stand near.
+	//==========================================================================================================================================================================
+	protected void ReleaseStationHandset(CVON_StationaryRadioComponent station, IEntity holder)
+	{
+		int holderId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(holder);
+		int callerId;
+		RplId stationId = station.GetRplId();
+		foreach (int senderId, RplId callRadio: m_mCallRadios)
+		{
+			//The holder's own call on the set; anyone's when the holder is gone
+			if (callRadio == stationId && (holderId <= 0 || senderId == holderId))
+			{
+				callerId = senderId;
+				break;
+			}
+		}
+
+		bool alive = false;
+		ChimeraCharacter holderCharacter = ChimeraCharacter.Cast(holder);
+		if (holderId > 0 && holderCharacter && holderCharacter.GetCharacterController())
+			alive = holderCharacter.GetCharacterController().GetLifeState() == ECharacterLifeState.ALIVE;
+
+		if (callerId > 0)
+		{
+			if (!alive && IsServerSettingOn(SETTING_CUT_OFF))
+				CutOffLocalVONBroadcasts(callerId);
+			else
+				RemoveLocalVONBroadcasts(callerId);
+		}
+
+		if (holderId <= 0)
+			return;
+
+		SCR_BaseGameMode gamemode = SCR_BaseGameMode.Cast(GetGame().GetGameMode());
+		PlayerManager pm = GetGame().GetPlayerManager();
+		SCR_PlayerController holderController = SCR_PlayerController.Cast(pm.GetPlayerController(holderId));
+		int listenTarget;
+		m_mRadioListenTarget.Find(holderId, listenTarget);
+		foreach (int senderId, array<int> receivers: m_mBroadcastReceivers)
+		{
+			if (!receivers || !receivers.Contains(holderId))
+				continue;
+
+			//Left as it is: a call not on the station's net, one another of their radios has, or one the player
+			//they listen to hears
+			CVON_VONContainer container = m_mActiveBroadcasts.Get(senderId);
+			if (!station.Receives(container) || (gamemode && HasMatchingRadio(holder, container, gamemode.IsEncryptionEnabled()))
+				|| (listenTarget > 0 && receivers.Contains(listenTarget)))
+				continue;
+
+			receivers.RemoveItem(holderId);
+			if (holderController)
+				holderController.RemoveLocalVONBroadcast(senderId);
+
+			//Still near a speaker playing it: heard from that speaker from now on. A speaker entry can't
+			//replace one on a radio, so the radio entry goes first.
+			IEntity sender = pm.GetPlayerControlledEntity(senderId);
+			if (sender && gamemode)
+				BroadcastToSpeakers(container, senderId, GetCallRadio(senderId), sender.GetOrigin(), m_mActiveBroadcastRange.Get(senderId), receivers, gamemode.IsEncryptionEnabled(), false, holderId);
+		}
+	}
+
+	//A player who has a station's handset in hand again (picked it up, raised their headset) hears the calls
+	//already under way on it, as SetRadioListenTarget does for a listener. Sent again to a receiver who
+	//already has the call, so an entry heard through a speaker turns into one on the radio.
+	//==========================================================================================================================================================================
+	void JoinCallsUnderWay(int playerId, CVON_StationaryRadioComponent radio)
+	{
+		PlayerManager pm = GetGame().GetPlayerManager();
+		SCR_PlayerController playerController = SCR_PlayerController.Cast(pm.GetPlayerController(playerId));
+		if (!playerController)
+			return;
+
+		foreach (int senderId, array<int> receivers: m_mBroadcastReceivers)
+		{
+			if (!receivers || senderId == playerId)
+				continue;
+
+			CVON_VONContainer container = m_mActiveBroadcasts.Get(senderId);
+			IEntity sender = pm.GetPlayerControlledEntity(senderId);
+			if (!sender || !radio.Receives(container))
+				continue;
+
+			vector senderOrigin = sender.GetOrigin();
+			float maxDist = m_mActiveBroadcastRange.Get(senderId);
+			playerController.AddLocalVONBroadcast(container, senderId, senderOrigin, maxDist);
+			if (!receivers.Contains(playerId))
+				receivers.Insert(playerId);
+			ForwardToRadioListeners(playerId, container, senderId, senderOrigin, maxDist, receivers);
+
+			//On the handset now, not a station speaker's listener any more
+			map<int, CVON_RadioComponent> stationListeners = m_mStationSpeakerListeners.Get(senderId);
+			if (stationListeners)
+				stationListeners.Remove(playerId);
+			map<int, CVON_RadioComponent> otherListeners = m_mOtherSpeakerListeners.Get(senderId);
+			if (otherListeners)
+				otherListeners.Remove(playerId);
+		}
 	}
 
 	//The radio whose handset this character is holding, or null
@@ -757,6 +1152,9 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		m_mActiveBroadcasts.Remove(playerIdToRemove);
 		m_mActiveBroadcastRange.Remove(playerIdToRemove);
 		m_mVoicePickupSent.Remove(playerIdToRemove); // receivers drop the pickup with the transmission
+		m_mCallRadios.Remove(playerIdToRemove);
+		m_mStationSpeakerListeners.Remove(playerIdToRemove); // only ever holds station speaker listeners
+		m_mOtherSpeakerListeners.Remove(playerIdToRemove);
 
 		array<int> receivers;
 		if (!m_mBroadcastReceivers.Find(playerIdToRemove, receivers) || !receivers)
