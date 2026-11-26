@@ -168,54 +168,50 @@ class CVON_RadioComponent: ScriptComponent
 		if (m_aChannels.Count() >= m_iCurrentChannel)
 			m_aChannels.Set(m_iCurrentChannel + input, freq);
 		m_sFrequency = freq;
-		bool isShared = false;
+		ApplyKeyForFrequency();
+
 		IEntity carrier = GetCarrier();
-		if (!carrier)
+		if (carrier && updateSettings)
 		{
-			BumpAndNotify();
-			return;
+			int playerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(carrier);
+			SCR_PlayerController playerController;
+			if (playerId > 0)
+				playerController = SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId));
+			if (playerController)
+				playerController.UpdateSettings();
 		}
-		FactionAffiliationComponent factionComp = FactionAffiliationComponent.Cast(carrier.FindComponent(FactionAffiliationComponent));
-		if (!factionComp)
-		{
-			BumpAndNotify();
-			return;
-		}
-
-		string ownerFactionKey = factionComp.GetAffiliatedFactionKey();
-		foreach (CVON_SharedFrequencyObject sharedFreq: CVON_VONGameModeComponent.GetInstance().m_aSharedFrequencies)
-		{
-			if (sharedFreq.m_sSharedFrequency != freq)
-				continue;
-
-			string sharedFactionKey = "";
-			if (!sharedFreq.m_aFactionIds.Contains(ownerFactionKey))
-				continue;
-			foreach (string factionKey: sharedFreq.m_aFactionIds)
-			{
-				sharedFactionKey += factionKey;
-				sharedFactionKey += "|";
-			}
-			isShared = true;
-			m_sFactionKey = sharedFactionKey;
-		}
-		int playerId = GetGame().GetPlayerManager().GetPlayerIdFromControlledEntity(carrier);
-		if (playerId > 0 && updateSettings)
-			SCR_PlayerController.Cast(GetGame().GetPlayerManager().GetPlayerController(playerId)).UpdateSettings();
-		if (!isShared && m_sOriginalFactionKey == "")
-			GetGame().GetCallqueue().CallLater(SetFactionKey, 1000, false);
-		else if (!isShared && m_sOriginalFactionKey != "")
-			SetFactionKey();
 		BumpAndNotify();
 	}
 
-	void SetFactionKey()
+	//Authority: shared key on a shared frequency, else the radio's own key fill. Goes by the key fill, not
+	//the carrier: a vehicle's faction often isn't its crew's.
+	//==========================================================================================================================================================================
+	protected void ApplyKeyForFrequency()
 	{
-		if (!Replication.IsServer())
+		if (m_sOriginalFactionKey == "")
 			return;
 
-		m_sFactionKey = m_sOriginalFactionKey;
-		BumpAndNotify();
+		string key = m_sOriginalFactionKey;
+		CVON_VONGameModeComponent gamemode = CVON_VONGameModeComponent.GetInstance();
+		if (gamemode)
+		{
+			string sharedKey = gamemode.GetSharedFrequencyKey(m_sFrequency, m_sOriginalFactionKey);
+			if (sharedKey != "")
+				key = sharedKey;
+		}
+		m_sFactionKey = key;
+	}
+
+	//On this faction's key: its own, or a shared-frequency key listing it ("US|BLUFOR|")
+	//==========================================================================================================================================================================
+	bool SharesKey(string factionKey)
+	{
+		if (m_sFactionKey == factionKey)
+			return true;
+
+		array<string> sharedKeys = {};
+		m_sFactionKey.Split("|", sharedKeys, true);
+		return sharedKeys.Contains(factionKey);
 	}
 
 	//Toggles radio power from the server, hmm... who named this
@@ -578,6 +574,18 @@ class CVON_RadioComponent: ScriptComponent
 			}
 		}
 
+		//Shared frequencies need a channel: a named frequency can't be typed in
+		if (gamemode)
+		{
+			array<string> sharedFrequencies = {};
+			gamemode.GetSharedFrequencies(factionKey, sharedFrequencies);
+			foreach (string sharedFrequency: sharedFrequencies)
+			{
+				if (!IsAlreadyAChannel(sharedFrequency, LRFrequencies, SRFrequencies))
+					LRFrequencies.Insert(sharedFrequency);
+			}
+		}
+
 		//Every radio with a key fill can end up playing out loud (its speaker turned on, or dropped), so
 		//transmissions check it (BroadcastToSpeakers skips radios on other frequencies first)
 		if (gamemode)
@@ -593,6 +601,7 @@ class CVON_RadioComponent: ScriptComponent
 			m_sFrequency = m_aChannels.Get(0);
 		}
 		OnChannelsInitialized();
+		ApplyKeyForFrequency();
 		BumpAndNotify();
 	}
 

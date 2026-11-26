@@ -311,6 +311,7 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		}
 
 		SelectStartingChannel();
+		ApplyKeyForFrequency();
 		BumpAndNotify();
 	}
 
@@ -379,17 +380,6 @@ class CVON_VehicleRadioComponent: CVON_RadioComponent
 		}
 
 		return "";
-	}
-
-	//Already on this key: the faction's own, or a shared-frequency key listing it ("US|BLUFOR|")
-	bool SharesKey(string factionKey)
-	{
-		if (m_sFactionKey == factionKey)
-			return true;
-
-		array<string> sharedKeys = {};
-		m_sFactionKey.Split("|", sharedKeys, true);
-		return sharedKeys.Contains(factionKey);
 	}
 
 	//The crew member's own radio to copy channels from: a long-range one if they have it

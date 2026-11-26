@@ -307,6 +307,45 @@ class CVON_VONGameModeComponent: SCR_BaseGameModeComponent
 		return m_Instance;
 	}
 
+	//The key every faction sharing this frequency uses on it ("OPFOR|INDFOR|"); empty when it isn't shared with this faction
+	//==========================================================================================================================================================================
+	string GetSharedFrequencyKey(string freq, string factionKey)
+	{
+		if (!m_aSharedFrequencies || freq == "" || factionKey == "")
+			return "";
+
+		foreach (CVON_SharedFrequencyObject sharedFreq: m_aSharedFrequencies)
+		{
+			if (!sharedFreq || !sharedFreq.m_aFactionIds || sharedFreq.m_sSharedFrequency != freq)
+				continue;
+			if (!sharedFreq.m_aFactionIds.Contains(factionKey))
+				continue;
+
+			string sharedKey = "";
+			foreach (string sharedFactionKey: sharedFreq.m_aFactionIds)
+				sharedKey += sharedFactionKey + "|";
+			return sharedKey;
+		}
+		return "";
+	}
+
+	//==========================================================================================================================================================================
+	void GetSharedFrequencies(string factionKey, notnull array<string> outFrequencies)
+	{
+		if (!m_aSharedFrequencies)
+			return;
+
+		foreach (CVON_SharedFrequencyObject sharedFreq: m_aSharedFrequencies)
+		{
+			if (!sharedFreq || !sharedFreq.m_aFactionIds || sharedFreq.m_sSharedFrequency == "")
+				continue;
+			if (!sharedFreq.m_aFactionIds.Contains(factionKey))
+				continue;
+			if (!outFrequencies.Contains(sharedFreq.m_sSharedFrequency))
+				outFrequencies.Insert(sharedFreq.m_sSharedFrequency);
+		}
+	}
+
 	void UpdateVolume(int playerId, int input)
 	{
 		int index = m_aPlayerIds.Find(playerId);

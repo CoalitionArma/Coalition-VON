@@ -135,7 +135,7 @@ modded class SCR_PlayerController
 			if (radioComp.GetCarrier() != GetControlledEntity())
 				continue;
 			SCR_FactionManager factionMan = SCR_FactionManager.Cast(GetGame().GetFactionManager());
-			if (radioComp.m_sFactionKey != "" && radioComp.m_sFactionKey != factionMan.GetPlayerFaction(GetPlayerId()).GetFactionKey())
+			if (radioComp.m_sFactionKey != "" && !radioComp.SharesKey(factionMan.GetPlayerFaction(GetPlayerId()).GetFactionKey()))
 				continue;
 			ref CVON_RadioSettingObject setting = new CVON_RadioSettingObject();
 			setting.m_sFreq = radioComp.m_sFrequency;
